@@ -19,6 +19,8 @@ from shapely.ops import unary_union
 CONTOUR_TYPES = {"LINE", "ARC", "CIRCLE", "ELLIPSE", "SPLINE", "LWPOLYLINE", "POLYLINE"}
 # Осевые, штриховые и т.п. — не контур
 SKIP_LINETYPES = ("AXIS", "CENTER", "DASH", "HIDDEN", "PHANTOM", "DOT", "ОСЕВ", "ШТРИХ", "ПУНКТИР")
+# Слои линий гиба (развёртки из гибочных программ) — не режутся, считаются отдельно
+BEND_LAYERS = ("BEND", "ГИБ")
 # $INSUNITS → множитель в мм (0 — не указано, считаем мм)
 UNIT_SCALE = {0: 1.0, 1: 25.4, 2: 304.8, 4: 1.0, 5: 10.0, 6: 1000.0}
 
@@ -50,6 +52,7 @@ class DxfDrawing:
     shapes: list        # кандидаты в деталь, от большего к меньшему
     default: int        # какой контур выбрать по умолчанию
     open_chains: int    # сколько незамкнутых цепочек отброшено
+    bends: int = 0      # сколько линий гиба пропущено
 
 
 class DxfError(Exception):
@@ -65,8 +68,11 @@ def load_dxf(file_path):
         raise DxfError("Файл повреждён или это не DXF")
     scale = UNIT_SCALE.get(doc.header.get("$INSUNITS", 0), 1.0)
 
-    closed, open_ = [], []
+    closed, open_, bends = [], [], 0
     for entity in _contour_entities(doc, doc.modelspace(), 0):
+        if any(key in entity.dxf.get("layer", "0").upper() for key in BEND_LAYERS):
+            bends += 1
+            continue
         try:
             pts = [(v.x * scale, v.y * scale)
                    for v in ezpath.make_path(entity).flattening(FLATTEN * scale)]
@@ -112,7 +118,7 @@ def load_dxf(file_path):
     # (иначе это рамка чертежа: деталь внутри неё)
     default = next((i for i in range(len(polygons))
                     if not any(children[j] for j in children[i])), 0)
-    return DxfDrawing(os.path.basename(file_path), shapes, default, dropped)
+    return DxfDrawing(os.path.basename(file_path), shapes, default, dropped, bends)
 
 
 def _contour_entities(doc, entities, depth):

@@ -207,12 +207,18 @@ class App(tk.Tk):
             self.dim_widgets[name] = [w for i, ((label, _), var) in enumerate(zip(fields, self.dims[name]))
                                       for w in self._entry(card, 2 + i, label, var)]
         self.dim_widgets["DXF"] = self._build_dxf_fields(card)
-        self._show_dims()
         self.part_mass = tk.StringVar(value="11")
         self.drawing_qty = tk.StringVar(value="1")
         # строки 2–4 — под размеры детали (до трёх полей)
-        self._entry(card, 5, "Масса по чертежу, кг", self.part_mass)
+        self.mass_caption, _ = self._entry(card, 5, "Масса по чертежу, кг", self.part_mass)
+        self.mass_reset = ttk.Button(card, text="↺", width=3, command=self._reset_dxf_mass)
+        self.mass_reset.grid(row=5, column=4, sticky="w", padx=(6, 0))
         self._entry(card, 6, "Кол-во на чертеже, шт", self.drawing_qty)
+        # В режиме DXF масса берётся по контуру, пока её не впишут руками
+        self.mass_auto = True
+        self._mass_by_program = False
+        self.part_mass.trace_add("write", lambda *_: self._mass_edited())
+        self._show_dims()
 
     def _build_dxf_fields(self, card):
         """Строки 2–4 для детали из DXF: файл, выбор контура, площадь и масса."""
@@ -225,12 +231,9 @@ class App(tk.Tk):
         self.dxf_box = ttk.Combobox(card, state="readonly", width=26)
         self.dxf_box.grid(row=3, column=1, columnspan=4, sticky="w", pady=2)
         self.dxf_box.bind("<<ComboboxSelected>>", lambda _: self._update_dxf_info())
-        info = ttk.Frame(card)
-        info.grid(row=4, column=0, columnspan=5, sticky="w", pady=2)
-        self.dxf_info = ttk.Label(info, style="Muted.TLabel", justify="left")
-        self.dxf_info.pack(side="left")
-        self.dxf_mass_btn = ttk.Button(info, text="→ в массу детали", command=self._use_dxf_mass)
-        return [open_btn, self.dxf_file, contour, self.dxf_box, info]
+        self.dxf_info = ttk.Label(card, style="Muted.TLabel", justify="left")
+        self.dxf_info.grid(row=4, column=0, columnspan=5, sticky="w", pady=2)
+        return [open_btn, self.dxf_file, contour, self.dxf_box, self.dxf_info]
 
     def _open_dxf(self):
         path = filedialog.askopenfilename(title="Деталь в DXF",
@@ -249,6 +252,7 @@ class App(tk.Tk):
         self.dxf_file.configure(text=drawing.name)
         self.dxf_box.configure(values=[f"{i + 1}. {s.label()}" for i, s in enumerate(drawing.shapes)])
         self.dxf_box.current(drawing.default)
+        self.mass_auto = True
         self._update_dxf_info()
 
     def _dxf_shape(self):
@@ -262,25 +266,39 @@ class App(tk.Tk):
         return shape.area * thickness * GRADES[self.grade.get()] / 1e9
 
     def _update_dxf_info(self):
+        """Площадь, масса по контуру и замечания по файлу; масса сама уходит в поле."""
         shape = self._dxf_shape()
         if shape is None:
             return
         lines = [f"Площадь {fmt(shape.area / 1e6, 4)} м²"]
         try:
-            lines[0] += f" · масса {fmt(self._dxf_mass(shape))} кг"
-            self.dxf_mass_btn.pack(side="left", padx=(8, 0))
+            mass = self._dxf_mass(shape)
+            lines[0] += f" · масса по контуру {fmt(mass)} кг"
+            if self.mass_auto and self.part_type.get() == "DXF":
+                self._mass_by_program = True
+                self.part_mass.set(fmt(mass))
+                self._mass_by_program = False
         except ValueError:
-            self.dxf_mass_btn.pack_forget()
+            pass
+        if not self.mass_auto:
+            lines.append("В расчёте — масса, вписанная вручную (↺ — вернуть по контуру)")
         if len(self.dxf.shapes) > 1:
             lines.append(f"В файле контуров: {len(self.dxf.shapes)}, выбран {self.dxf_box.current() + 1}")
+        if self.dxf.bends:
+            lines.append(f"Линий гиба: {self.dxf.bends} — не режутся, пропущены")
         if self.dxf.open_chains:
             lines.append(f"Пропущено незамкнутых линий: {self.dxf.open_chains}")
         self.dxf_info.configure(text="\n".join(lines))
 
-    def _use_dxf_mass(self):
-        shape = self._dxf_shape()
-        if shape is not None:
-            self.part_mass.set(fmt(self._dxf_mass(shape)))
+    def _mass_edited(self):
+        """Масса изменена руками — в режиме DXF больше не подменяем её массой по контуру."""
+        if not self._mass_by_program and self.part_type.get() == "DXF" and self.dxf:
+            self.mass_auto = False
+            self._update_dxf_info()
+
+    def _reset_dxf_mass(self):
+        self.mass_auto = True
+        self._update_dxf_info()
 
     def _build_nest_card(self, form):
         card = self._card(form, "Раскладка")
@@ -332,12 +350,20 @@ class App(tk.Tk):
         self.copied.pack(side="left", padx=4)
 
     def _show_dims(self):
+        dxf = self.part_type.get() == "DXF"
         for name, widgets in self.dim_widgets.items():
             for w in widgets:
                 if name == self.part_type.get():
                     w.grid()
                 else:
                     w.grid_remove()
+        # для DXF масса считается по контуру — подпись без «по чертежу», есть ↺
+        self.mass_caption.configure(text="Масса детали, кг" if dxf else "Масса по чертежу, кг")
+        if dxf:
+            self.mass_reset.grid()
+            self._update_dxf_info()
+        else:
+            self.mass_reset.grid_remove()
 
     def _toggle_manual(self):
         self.manual_entry.configure(state="normal" if self.manual.get() else "disabled")
