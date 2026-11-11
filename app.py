@@ -1,6 +1,7 @@
 """Расчёт заготовки, угара, отхода и металлолома по раскладке на листе."""
 
 import os
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, ttk
@@ -27,11 +28,18 @@ METRICS = [
     ("scrap", "Металлолом", "Мт"),
 ]
 
+APP_NAME = "Neptun 3000"
 FONT = "Segoe UI"
 ACCENT = "#005fb8"
 ERROR = "#c42b1c"
 OK = "#0f7b0f"
 MUTED = "#5f6b7a"
+
+
+def resource(path):
+    """Путь к файлу из assets — и при запуске из исходников, и внутри собранного .exe."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, path)
 
 
 def fmt(value, digits=3):
@@ -51,7 +59,7 @@ def num(text, name):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Раскрой листа")
+        self.title(APP_NAME)
         height = min(860, self.winfo_screenheight() - 80)
         self.geometry(f"1200x{height}")
         self.minsize(1000, 560)
@@ -67,12 +75,19 @@ class App(tk.Tk):
 
         header = ttk.Frame(self, padding=(20, 12, 20, 0))
         header.pack(fill="x")
-        ttk.Label(header, text="Раскрой листа", style="Title.TLabel").pack(side="left")
+        ttk.Label(header, text=APP_NAME, style="Title.TLabel").pack(side="left")
         ttk.Label(header, text="заготовка, угар, отход и металлолом по раскладке деталей",
                   style="Muted.TLabel").pack(side="left", padx=(12, 0), pady=(8, 0))
 
+        footer = ttk.Frame(self, padding=(20, 0, 20, 10))
+        footer.pack(side="bottom", fill="x")
+        link = ttk.Label(footer, text="От разработчика", style="Link.TLabel", cursor="hand2")
+        link.pack(side="left")
+        link.bind("<Button-1>", lambda _: self.show_developer())
+        self.developer = None
+
         tabs = ttk.Notebook(self)
-        tabs.pack(fill="both", expand=True, padx=20, pady=(8, 16))
+        tabs.pack(fill="both", expand=True, padx=20, pady=(8, 8))
         calc_tab = ttk.Frame(tabs, padding=12)
         sheets_tab = ttk.Frame(tabs, padding=12)
         tabs.add(calc_tab, text="  Расчёт  ")
@@ -93,6 +108,24 @@ class App(tk.Tk):
         s.configure("Error.TLabel", font=(FONT, 10), foreground=ERROR)
         s.configure("Ok.TLabel", font=(FONT, 10), foreground=OK)
         s.configure("Big.Accent.TButton", font=(FONT, 11, "bold"))
+        s.configure("Link.TLabel", font=(FONT, 10, "underline"), foreground=ACCENT)
+
+    def show_developer(self):
+        """Страница «От разработчика» поверх всего окна; «Назад» или Esc — вернуться."""
+        if self.developer is None:
+            page = ttk.Frame(self, padding=12)
+            ttk.Button(page, text="←  Назад", command=self.hide_developer).pack(anchor="nw")
+            self.developer_photo = tk.PhotoImage(file=resource(os.path.join("assets", "developer.png")))
+            ttk.Label(page, image=self.developer_photo).pack(expand=True)
+            self.developer = page
+        self.developer.place(x=0, y=0, relwidth=1, relheight=1)
+        self.developer.lift()
+        self.bind("<Escape>", lambda _: self.hide_developer())
+
+    def hide_developer(self):
+        if self.developer is not None:
+            self.developer.place_forget()
+        self.unbind("<Escape>")
 
     def _card(self, parent, title):
         card = ttk.Frame(parent, style="Card.TFrame", padding=12)

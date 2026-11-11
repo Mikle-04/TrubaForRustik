@@ -1,4 +1,4 @@
-# Раскрой листа
+# Neptun 3000
 
 Программа для расчёта **массы заготовки, угара, отхода и металлолома** при вырезке деталей из стального листа.
 
@@ -28,7 +28,7 @@
 
 ## Быстрый старт
 
-1. Скачай `Raskroy.exe` из раздела **Releases** этого репозитория.
+1. Скачай `Neptun3000.exe` из раздела **Releases** этого репозитория.
 2. Запусти двойным кликом — устанавливать ничего не нужно.
 3. Если Windows покажет «Windows защитила ваш компьютер», нажми **Подробнее → Выполнить в любом случае**.
    Это обычное предупреждение для программ без цифровой подписи.
@@ -320,11 +320,14 @@ python app.py
 
 ```
 pip install pyinstaller
-python -m PyInstaller --onefile --windowed --name Raskroy --noconfirm ^
-    --distpath dist --workpath build --specpath build app.py
+python -m PyInstaller --onefile --windowed --name Neptun3000 --noconfirm ^
+    --distpath dist --workpath build --specpath build ^
+    --add-data "%CD%\assets\developer.png;assets" app.py
 ```
 
-Готовый файл — `dist\Raskroy.exe`. После любых правок в коде его нужно пересобрать.
+`--add-data` упаковывает картинку для страницы «От разработчика» (ссылка внизу окна).
+
+Готовый файл — `dist\Neptun3000.exe`. После любых правок в коде его нужно пересобрать.
 
 ---
 
