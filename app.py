@@ -110,6 +110,7 @@ class App(tk.Tk):
         s.configure("Ok.TLabel", font=(FONT, 10), foreground=OK)
         s.configure("Big.Accent.TButton", font=(FONT, 11, "bold"))
         s.configure("Big.TButton", font=(FONT, 11, "bold"))
+        s.configure("PinValue.TLabel", font=(FONT, 16, "bold"))
         s.configure("Link.TLabel", font=(FONT, 10, "underline"), foreground=ACCENT)
 
     def show_developer(self):
@@ -384,8 +385,10 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Копировать текст", command=self.copy_text).pack(side="left")
         ttk.Button(buttons, text="Копировать для Excel", command=self.copy_excel).pack(
             side="left", padx=8)
+        ttk.Button(buttons, text="Окно поверх всех", command=self.toggle_pin).pack(side="left")
         self.copied = ttk.Label(buttons, style="Ok.TLabel")
-        self.copied.pack(side="left", padx=4)
+        self.copied.pack(side="left", padx=8)
+        self.pin = None
 
     def _show_dims(self):
         dxf = self.part_type.get() == "DXF"
@@ -562,6 +565,62 @@ class App(tk.Tk):
             lines += ["", f"На {qty:g} шт по чертежу:"] + [
                 f"  {t} ({s}) = {fmt(getattr(r, k) * qty)} кг" for k, t, s in METRICS]
         self.report = "\n".join(lines)
+        self._update_pin()
+
+    # ---------- Маленькое окно результата поверх всех окон ----------
+
+    def toggle_pin(self):
+        """Окно с результатом поверх всех программ — чтобы переписывать цифры, не переключаясь."""
+        if self.pin is not None:
+            self._close_pin()
+            return
+        pin = tk.Toplevel(self)
+        pin.title(f"{APP_NAME} — результат")
+        pin.attributes("-topmost", True)
+        pin.configure(background=ttk.Style(self).lookup("TFrame", "background") or "#fafafa")
+        pin.protocol("WM_DELETE_WINDOW", self._close_pin)
+        pin.geometry(f"+{self.winfo_rootx() + self.winfo_width() - 380}+{self.winfo_rooty() + 40}")
+        self.pin = pin
+        self.pin_body = ttk.Frame(pin, padding=12)
+        self.pin_body.pack(fill="both", expand=True)
+        self._update_pin()
+
+    def _close_pin(self):
+        if self.pin is not None:
+            self.pin.destroy()
+            self.pin = None
+
+    def _update_pin(self):
+        if self.pin is None:
+            return
+        body = self.pin_body
+        for child in body.winfo_children():
+            child.destroy()
+        if not self.values:
+            ttk.Label(body, text="Нажмите «Рассчитать» в программе —\nрезультат появится здесь",
+                      style="Muted.TLabel", justify="left").grid(row=0, column=0)
+            return
+        sheet, m_sheet, part, m_part, count, blank, burn, waste, scrap, qty = self.values
+        ttk.Label(body, style="Muted.TLabel", justify="left",
+                  text=f"{sheet}\n{part} · Мд {fmt(m_part)} кг\nНа листе: {count} шт"
+                  ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        status = ttk.Label(body, style="Muted.TLabel", text="Клик по числу — скопировать")
+        cols = [("на 1 шт", 1)] + ([(f"на {qty:g} шт", qty)] if qty != 1 else [])
+        if len(cols) > 1:
+            for c, (title, _) in enumerate(cols, start=1):
+                ttk.Label(body, text=title, style="Caption.TLabel").grid(
+                    row=1, column=c, sticky="e", padx=(16, 0))
+        for row, ((_, name, short), v) in enumerate(zip(METRICS, (blank, burn, waste, scrap)), start=2):
+            ttk.Label(body, text=f"{name} · {short}", style="Info.TLabel").grid(row=row, column=0, sticky="w")
+            for c, (_, k) in enumerate(cols, start=1):
+                text = fmt(v * k)
+                value = ttk.Label(body, text=text, style="PinValue.TLabel", cursor="hand2",
+                                  foreground=ERROR if v < 0 else "")
+                value.grid(row=row, column=c, sticky="e", padx=(16, 0))
+                value.bind("<Button-1>", lambda _, t=text, n=short: (
+                    self.clipboard_clear(), self.clipboard_append(t),
+                    status.configure(text=f"✓ Скопировано: {n} = {t}", style="Ok.TLabel")))
+        status.grid(row=len(METRICS) + 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     def _to_clipboard(self, text, note):
         self.clipboard_clear()
