@@ -19,7 +19,7 @@ import pyclipper
 from shapely import affinity
 from shapely.geometry import LineString, MultiPoint, MultiPolygon, Point, Polygon
 
-from nesting import fit
+from nesting import check_cancel, fit
 
 SCALE = 100            # pyclipper работает в целых числах: сотые доли мм
 SIMPLIFY = 0.05        # мм — упрощение контура для раскроя
@@ -127,6 +127,7 @@ def best_tiles(outer, real, g):
 
     def try_angle(angle, full):
         """full — пробовать все положения второй детали в паре, иначе только самую компактную."""
+        check_cancel()
         if angle in tiles and (not full or angle in done_full):
             return
         if full:

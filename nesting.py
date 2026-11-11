@@ -12,10 +12,23 @@
 """
 
 import math
+import threading
 from dataclasses import dataclass
 
 EPS = 1e-6
 SPLIT_STEP = 1.0  # шаг перебора линии раздела листа, мм
+
+# Отмена долгого раскроя: окно ставит флажок, перебор проверяет его между шагами
+CANCEL = threading.Event()
+
+
+class Cancelled(Exception):
+    pass
+
+
+def check_cancel():
+    if CANCEL.is_set():
+        raise Cancelled()
 
 
 def fit(span, size, pitch):
@@ -179,6 +192,7 @@ def nest(part, sheet_l, sheet_w, gap=5.0, margin=0.0):
     for axis, span in ((0, w), (1, h)):
         cut = step
         while cut < span - gap:
+            check_cancel()
             rest = span - cut - gap
             if axis == 0:
                 c1, p1 = part.best(cut, h, gap)

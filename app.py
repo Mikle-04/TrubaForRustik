@@ -3,6 +3,7 @@
 import os
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
@@ -11,7 +12,7 @@ import sv_ttk
 from calc import calculate
 from dxf_import import DxfError, load_dxf
 from free_nesting import FreeShape
-from nesting import Circle, Gusset, Plate, nest
+from nesting import CANCEL, Cancelled, Circle, Gusset, Plate, nest
 from sheets import GRADES, SHEET_L, SHEET_W, THICKNESSES, sheet_mass, sheet_name
 
 PART_TYPES = {
@@ -356,6 +357,9 @@ class App(tk.Tk):
         self.summary = ttk.Label(card, style="Info.TLabel", justify="left",
                                  text="Заполните данные слева и нажмите «Рассчитать» (или Enter)")
         self.summary.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 10))
+        self.cancel_btn = ttk.Button(card, text="Отмена", command=self.cancel)
+        self.cancel_btn.grid(row=1, column=3, sticky="e", pady=(0, 10))
+        self.cancel_btn.grid_remove()
 
         self.metric_labels = {}
         for col, (key, title, short) in enumerate(METRICS):
@@ -463,12 +467,18 @@ class App(tk.Tk):
             return
         self.busy = True
         self.configure(cursor="watch")
-        self.summary.configure(text="Считаю раскладку…")
+        previous = self.summary.cget("text")
+        CANCEL.clear()
+        self.cancel_btn.configure(state="normal")
+        self.cancel_btn.grid()
+        started = time.monotonic()
         result = {}
 
         def work():
             try:
                 result["layout"] = nest(part, length, width, gap, margin)
+            except Cancelled:
+                result["cancelled"] = True
             except Exception as e:
                 result["error"] = e
 
@@ -477,10 +487,19 @@ class App(tk.Tk):
 
         def wait():
             if thread.is_alive():
+                seconds = int(time.monotonic() - started)
+                text = "Отменяю…" if CANCEL.is_set() else f"Считаю раскладку… {seconds} с"
+                self.summary.configure(text=text)
                 self.after(100, wait)
                 return
             self.busy = False
             self.configure(cursor="")
+            self.cancel_btn.grid_remove()
+            if "cancelled" in result:
+                # прошлый результат остаётся на экране как был
+                self.summary.configure(text=previous)
+                self.error.configure(text="Расчёт отменён")
+                return
             if "error" in result:
                 self.summary.configure(text="")
                 self.error.configure(text=f"Не удалось разложить деталь: {result['error']}")
@@ -491,6 +510,10 @@ class App(tk.Tk):
             self._show_result(thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual)
 
         wait()
+
+    def cancel(self):
+        CANCEL.set()
+        self.cancel_btn.configure(state="disabled")
 
     def _show_result(self, thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual):
         count = manual if manual is not None else self.layout.count
