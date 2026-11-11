@@ -109,6 +109,7 @@ class App(tk.Tk):
         s.configure("Error.TLabel", font=(FONT, 10), foreground=ERROR)
         s.configure("Ok.TLabel", font=(FONT, 10), foreground=OK)
         s.configure("Big.Accent.TButton", font=(FONT, 11, "bold"))
+        s.configure("Big.TButton", font=(FONT, 11, "bold"))
         s.configure("Link.TLabel", font=(FONT, 10, "underline"), foreground=ACCENT)
 
     def show_developer(self):
@@ -129,17 +130,17 @@ class App(tk.Tk):
         self.unbind("<Escape>")
 
     def _card(self, parent, title):
-        card = ttk.Frame(parent, style="Card.TFrame", padding=12)
+        card = ttk.Frame(parent, style="Card.TFrame", padding=10)
         ttk.Label(card, text=title, style="Section.TLabel").grid(
-            row=0, column=0, columnspan=4, sticky="w", pady=(0, 6))
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
         return card
 
     def _entry(self, parent, row, label, var, width=12):
         """Подпись + поле в строке row; возвращает (подпись, поле)."""
         caption = ttk.Label(parent, text=label)
-        caption.grid(row=row, column=0, sticky="w", pady=2, padx=(0, 10))
+        caption.grid(row=row, column=0, sticky="w", pady=1, padx=(0, 10))
         entry = ttk.Entry(parent, textvariable=var, width=width)
-        entry.grid(row=row, column=1, columnspan=3, sticky="w", pady=2)
+        entry.grid(row=row, column=1, columnspan=3, sticky="w", pady=1)
         return caption, entry
 
     # ---------- Вкладка «Расчёт» ----------
@@ -153,8 +154,11 @@ class App(tk.Tk):
         self._build_sheet_card(form)
         self._build_part_card(form)
         self._build_nest_card(form)
-        ttk.Button(form, text="Рассчитать", style="Big.Accent.TButton",
-                   command=self.run).pack(fill="x", pady=(10, 0), ipady=4)
+        # во время расчёта над кнопкой — «Идёт расчёт… N с», а сама кнопка становится «Отмена»
+        self.progress = ttk.Label(form, style="Info.TLabel", anchor="center")
+        self.run_btn = ttk.Button(form, text="Рассчитать", style="Big.Accent.TButton",
+                                  command=lambda: self.cancel() if self.busy else self.run())
+        self.run_btn.pack(fill="x", pady=(8, 0), ipady=4)
 
         self._build_result_card(root)
 
@@ -205,16 +209,16 @@ class App(tk.Tk):
         self.sheet_w = tk.StringVar(value=str(SHEET_W))
         self.sheet_l = tk.StringVar(value=str(SHEET_L))
         self.sheet_m = tk.StringVar()
-        ttk.Label(card, text="Толщина, мм").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Label(card, text="Толщина, мм").grid(row=1, column=0, sticky="w", pady=1)
         ttk.Combobox(card, textvariable=self.thickness, width=10, values=[str(t) for t in THICKNESSES]
-                     ).grid(row=1, column=1, columnspan=3, sticky="w", pady=2)
-        ttk.Label(card, text="Марка стали").grid(row=2, column=0, sticky="w", pady=2)
+                     ).grid(row=1, column=1, columnspan=3, sticky="w", pady=1)
+        ttk.Label(card, text="Марка стали").grid(row=2, column=0, sticky="w", pady=1)
         ttk.Combobox(card, textvariable=self.grade, width=10, state="readonly", values=list(GRADES)
-                     ).grid(row=2, column=1, columnspan=3, sticky="w", pady=2)
-        ttk.Label(card, text="Ширина × длина, мм").grid(row=3, column=0, sticky="w", pady=2, padx=(0, 10))
-        ttk.Entry(card, textvariable=self.sheet_w, width=6).grid(row=3, column=1, sticky="w", pady=2)
+                     ).grid(row=2, column=1, columnspan=3, sticky="w", pady=1)
+        ttk.Label(card, text="Ширина × длина, мм").grid(row=3, column=0, sticky="w", pady=1, padx=(0, 10))
+        ttk.Entry(card, textvariable=self.sheet_w, width=6).grid(row=3, column=1, sticky="w", pady=1)
         ttk.Label(card, text="×").grid(row=3, column=2, padx=4)
-        ttk.Entry(card, textvariable=self.sheet_l, width=6).grid(row=3, column=3, sticky="w", pady=2)
+        ttk.Entry(card, textvariable=self.sheet_l, width=6).grid(row=3, column=3, sticky="w", pady=1)
         self._entry(card, 4, "Масса листа, кг", self.sheet_m)
         ttk.Button(card, text="↺", width=3, command=self._update_sheet_mass).grid(
             row=4, column=4, sticky="w", padx=(6, 0))
@@ -226,7 +230,7 @@ class App(tk.Tk):
 
     def _build_part_card(self, form):
         card = self._card(form, "Деталь")
-        card.pack(fill="x", pady=(12, 0))
+        card.pack(fill="x", pady=(8, 0))
         self.part_type = tk.StringVar(value="Фланец")
         types = ttk.Frame(card)
         types.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 4))
@@ -257,16 +261,16 @@ class App(tk.Tk):
     def _build_dxf_fields(self, card):
         """Строки 2–4 для детали из DXF: файл, выбор контура, площадь и масса."""
         open_btn = ttk.Button(card, text="Открыть DXF…", command=self._open_dxf)
-        open_btn.grid(row=2, column=0, sticky="w", pady=2)
+        open_btn.grid(row=2, column=0, sticky="w", pady=1)
         self.dxf_file = ttk.Label(card, text="файл не выбран", style="Muted.TLabel")
-        self.dxf_file.grid(row=2, column=1, columnspan=4, sticky="w", pady=2)
+        self.dxf_file.grid(row=2, column=1, columnspan=4, sticky="w", pady=1)
         contour = ttk.Label(card, text="Контур")
-        contour.grid(row=3, column=0, sticky="w", pady=2)
+        contour.grid(row=3, column=0, sticky="w", pady=1)
         self.dxf_box = ttk.Combobox(card, state="readonly", width=26)
-        self.dxf_box.grid(row=3, column=1, columnspan=4, sticky="w", pady=2)
+        self.dxf_box.grid(row=3, column=1, columnspan=4, sticky="w", pady=1)
         self.dxf_box.bind("<<ComboboxSelected>>", lambda _: self._update_dxf_info())
         self.dxf_info = ttk.Label(card, style="Muted.TLabel", justify="left")
-        self.dxf_info.grid(row=4, column=0, columnspan=5, sticky="w", pady=2)
+        self.dxf_info.grid(row=4, column=0, columnspan=5, sticky="w", pady=1)
         return [open_btn, self.dxf_file, contour, self.dxf_box, self.dxf_info]
 
     def _open_dxf(self):
@@ -336,7 +340,7 @@ class App(tk.Tk):
 
     def _build_nest_card(self, form):
         card = self._card(form, "Раскладка")
-        card.pack(fill="x", pady=(12, 0))
+        card.pack(fill="x", pady=(8, 0))
         self.gap = tk.StringVar(value="5")
         self.margin = tk.StringVar(value="0")
         self._entry(card, 1, "Зазор между деталями, мм", self.gap)
@@ -357,9 +361,6 @@ class App(tk.Tk):
         self.summary = ttk.Label(card, style="Info.TLabel", justify="left",
                                  text="Заполните данные слева и нажмите «Рассчитать» (или Enter)")
         self.summary.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 10))
-        self.cancel_btn = ttk.Button(card, text="Отмена", command=self.cancel)
-        self.cancel_btn.grid(row=1, column=3, sticky="e", pady=(0, 10))
-        self.cancel_btn.grid_remove()
 
         self.metric_labels = {}
         for col, (key, title, short) in enumerate(METRICS):
@@ -468,9 +469,10 @@ class App(tk.Tk):
         self.busy = True
         self.configure(cursor="watch")
         previous = self.summary.cget("text")
+        self.summary.configure(text="Идёт расчёт…")
         CANCEL.clear()
-        self.cancel_btn.configure(state="normal")
-        self.cancel_btn.grid()
+        self.run_btn.configure(text="Отмена", style="Big.TButton", state="normal")
+        self.progress.pack(fill="x", pady=(6, 0), before=self.run_btn)
         started = time.monotonic()
         result = {}
 
@@ -488,13 +490,14 @@ class App(tk.Tk):
         def wait():
             if thread.is_alive():
                 seconds = int(time.monotonic() - started)
-                text = "Отменяю…" if CANCEL.is_set() else f"Считаю раскладку… {seconds} с"
-                self.summary.configure(text=text)
+                text = "Отменяю…" if CANCEL.is_set() else f"Идёт расчёт… {seconds} с"
+                self.progress.configure(text=text)
                 self.after(100, wait)
                 return
             self.busy = False
             self.configure(cursor="")
-            self.cancel_btn.grid_remove()
+            self.progress.pack_forget()
+            self.run_btn.configure(text="Рассчитать", style="Big.Accent.TButton", state="normal")
             if "cancelled" in result:
                 # прошлый результат остаётся на экране как был
                 self.summary.configure(text=previous)
@@ -513,7 +516,7 @@ class App(tk.Tk):
 
     def cancel(self):
         CANCEL.set()
-        self.cancel_btn.configure(state="disabled")
+        self.run_btn.configure(state="disabled")
 
     def _show_result(self, thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual):
         count = manual if manual is not None else self.layout.count
