@@ -1,11 +1,15 @@
 """Расчёт заготовки, угара, отхода и металлолома по раскладке на листе."""
 
+import os
+import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
 import sv_ttk
 
 from calc import calculate
+from dxf_import import DxfError, load_dxf
+from free_nesting import FreeShape
 from nesting import Circle, Gusset, Plate, nest
 from sheets import GRADES, SHEET_L, SHEET_W, THICKNESSES, sheet_mass, sheet_name
 
@@ -13,6 +17,7 @@ PART_TYPES = {
     "Фланец": [("Диаметр, мм", "400")],
     "Пластина": [("Длина, мм", "200"), ("Ширина, мм", "100")],
     "Косынка": [("Катет 1, мм", "130"), ("Катет 2, мм", "80"), ("Срез углов, мм", "10")],
+    "DXF": [],  # контур из файла — свои поля, см. _build_dxf_fields
 }
 
 METRICS = [
@@ -53,6 +58,10 @@ class App(tk.Tk):
         sv_ttk.set_theme("light")
         self._styles()
         self.layout = None
+        self.busy = False
+        self.dxf = None           # загруженный чертёж (DxfDrawing)
+        self.dxf_path = None
+        self.free_parts = {}      # (файл, контур, время изменения) → FreeShape: раскрой кэшируется
         self.values = None
         self.report = ""
 
@@ -177,6 +186,8 @@ class App(tk.Tk):
             row=4, column=4, sticky="w", padx=(6, 0))
         for var in (self.thickness, self.grade, self.sheet_w, self.sheet_l):
             var.trace_add("write", lambda *_: self._update_sheet_mass())
+        for var in (self.thickness, self.grade):
+            var.trace_add("write", lambda *_: self._update_dxf_info())
         self._update_sheet_mass()
 
     def _build_part_card(self, form):
@@ -187,7 +198,7 @@ class App(tk.Tk):
         types.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 4))
         for name in PART_TYPES:
             ttk.Radiobutton(types, text=name, value=name, variable=self.part_type,
-                            style="Toggle.TButton", command=self._show_dims, width=9
+                            style="Toggle.TButton", command=self._show_dims, width=8
                             ).pack(side="left", padx=(0, 6))
         # Поля размеров всех типов создаются сразу (строки 2–4), видны только поля выбранного
         self.dims, self.dim_widgets = {}, {}
@@ -195,12 +206,81 @@ class App(tk.Tk):
             self.dims[name] = [tk.StringVar(value=v) for _, v in fields]
             self.dim_widgets[name] = [w for i, ((label, _), var) in enumerate(zip(fields, self.dims[name]))
                                       for w in self._entry(card, 2 + i, label, var)]
+        self.dim_widgets["DXF"] = self._build_dxf_fields(card)
         self._show_dims()
         self.part_mass = tk.StringVar(value="11")
         self.drawing_qty = tk.StringVar(value="1")
         # строки 2–4 — под размеры детали (до трёх полей)
         self._entry(card, 5, "Масса по чертежу, кг", self.part_mass)
         self._entry(card, 6, "Кол-во на чертеже, шт", self.drawing_qty)
+
+    def _build_dxf_fields(self, card):
+        """Строки 2–4 для детали из DXF: файл, выбор контура, площадь и масса."""
+        open_btn = ttk.Button(card, text="Открыть DXF…", command=self._open_dxf)
+        open_btn.grid(row=2, column=0, sticky="w", pady=2)
+        self.dxf_file = ttk.Label(card, text="файл не выбран", style="Muted.TLabel")
+        self.dxf_file.grid(row=2, column=1, columnspan=4, sticky="w", pady=2)
+        contour = ttk.Label(card, text="Контур")
+        contour.grid(row=3, column=0, sticky="w", pady=2)
+        self.dxf_box = ttk.Combobox(card, state="readonly", width=26)
+        self.dxf_box.grid(row=3, column=1, columnspan=4, sticky="w", pady=2)
+        self.dxf_box.bind("<<ComboboxSelected>>", lambda _: self._update_dxf_info())
+        info = ttk.Frame(card)
+        info.grid(row=4, column=0, columnspan=5, sticky="w", pady=2)
+        self.dxf_info = ttk.Label(info, style="Muted.TLabel", justify="left")
+        self.dxf_info.pack(side="left")
+        self.dxf_mass_btn = ttk.Button(info, text="→ в массу детали", command=self._use_dxf_mass)
+        return [open_btn, self.dxf_file, contour, self.dxf_box, info]
+
+    def _open_dxf(self):
+        path = filedialog.askopenfilename(title="Деталь в DXF",
+                                          filetypes=[("Чертёж DXF", "*.dxf"), ("Все файлы", "*.*")])
+        if path:
+            self.load_dxf_file(path)
+
+    def load_dxf_file(self, path):
+        try:
+            drawing = load_dxf(path)
+        except DxfError as e:
+            self.error.configure(text=f"DXF: {e}")
+            return
+        self.error.configure(text="")
+        self.dxf, self.dxf_path = drawing, path
+        self.dxf_file.configure(text=drawing.name)
+        self.dxf_box.configure(values=[f"{i + 1}. {s.label()}" for i, s in enumerate(drawing.shapes)])
+        self.dxf_box.current(drawing.default)
+        self._update_dxf_info()
+
+    def _dxf_shape(self):
+        if not self.dxf:
+            return None
+        return self.dxf.shapes[max(self.dxf_box.current(), 0)]
+
+    def _dxf_mass(self, shape):
+        """Масса по контуру: площадь (без отверстий) × толщина × плотность."""
+        thickness = num(self.thickness.get(), "Толщина")
+        return shape.area * thickness * GRADES[self.grade.get()] / 1e9
+
+    def _update_dxf_info(self):
+        shape = self._dxf_shape()
+        if shape is None:
+            return
+        lines = [f"Площадь {fmt(shape.area / 1e6, 4)} м²"]
+        try:
+            lines[0] += f" · масса {fmt(self._dxf_mass(shape))} кг"
+            self.dxf_mass_btn.pack(side="left", padx=(8, 0))
+        except ValueError:
+            self.dxf_mass_btn.pack_forget()
+        if len(self.dxf.shapes) > 1:
+            lines.append(f"В файле контуров: {len(self.dxf.shapes)}, выбран {self.dxf_box.current() + 1}")
+        if self.dxf.open_chains:
+            lines.append(f"Пропущено незамкнутых линий: {self.dxf.open_chains}")
+        self.dxf_info.configure(text="\n".join(lines))
+
+    def _use_dxf_mass(self):
+        shape = self._dxf_shape()
+        if shape is not None:
+            self.part_mass.set(fmt(self._dxf_mass(shape)))
 
     def _build_nest_card(self, form):
         card = self._card(form, "Раскладка")
@@ -280,6 +360,13 @@ class App(tk.Tk):
 
     def _make_part(self):
         kind = self.part_type.get()
+        if kind == "DXF":
+            shape = self._dxf_shape()
+            if shape is None:
+                raise ValueError("Выберите DXF-файл с деталью")
+            key = (self.dxf_path, self.dxf_box.current(), os.path.getmtime(self.dxf_path))
+            part = self.free_parts.setdefault(key, FreeShape(shape.polygon))
+            return part, f"{self.dxf.name} ({shape.width:.0f}×{shape.height:.0f})"
         values = [num(v.get(), label) for (label, _), v in zip(PART_TYPES[kind], self.dims[kind])]
         if any(v == 0 for v in values[:2]):
             raise ValueError("Размеры детали должны быть больше нуля")
@@ -312,19 +399,46 @@ class App(tk.Tk):
             self.error.configure(text=str(e))
             return
 
+        # Раскрой сложной детали считается секунды — в фоне, чтобы окно не зависало
+        if self.busy:
+            return
+        self.busy = True
         self.configure(cursor="watch")
-        self.update_idletasks()
-        try:
-            self.layout = nest(part, length, width, gap, margin)
-            self.sheet_size = (length, width)
-        finally:
-            self.configure(cursor="")
-        self._draw()
+        self.summary.configure(text="Считаю раскладку…")
+        result = {}
 
+        def work():
+            try:
+                result["layout"] = nest(part, length, width, gap, margin)
+            except Exception as e:
+                result["error"] = e
+
+        thread = threading.Thread(target=work, daemon=True)
+        thread.start()
+
+        def wait():
+            if thread.is_alive():
+                self.after(100, wait)
+                return
+            self.busy = False
+            self.configure(cursor="")
+            if "error" in result:
+                self.summary.configure(text="")
+                self.error.configure(text=f"Не удалось разложить деталь: {result['error']}")
+                return
+            self.layout = result["layout"]
+            self.sheet_size = (length, width)
+            self._draw()
+            self._show_result(thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual)
+
+        wait()
+
+    def _show_result(self, thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual):
         count = manual if manual is not None else self.layout.count
         source = (f"вручную (программа разложила {self.layout.count})" if manual is not None
                   else "раскладка программы")
         if count == 0:
+            self.summary.configure(text="")
             self.error.configure(text="Деталь не помещается на лист")
             return
 
@@ -410,7 +524,8 @@ class App(tk.Tk):
                               fill="#cfe3fa", outline=ACCENT)
             else:
                 pts = [v for x, y in shape[1] for v in (ox + x * scale, oy + y * scale)]
-                c.create_polygon(pts, fill="#cfe3fa", outline=ACCENT)
+                hole = shape[0] == "hole"
+                c.create_polygon(pts, fill="#e8edf2" if hole else "#cfe3fa", outline=ACCENT)
         c.create_text(ox, oy + sheet_w * scale + 6, anchor="nw", fill=MUTED, font=(FONT, 10),
                       text=f"Лист {sheet_l:g}×{sheet_w:g} мм · программа разложила "
                            f"{self.layout.count} шт")

@@ -175,8 +175,9 @@ def nest(part, sheet_l, sheet_w, gap=5.0, margin=0.0):
     plan = [(0.0, 0.0, params)] if params else []
 
     # Разрез поперёк длины (x) и поперёк ширины (y): зона 1 + зазор + зона 2
+    step = getattr(part, "split_step", SPLIT_STEP)
     for axis, span in ((0, w), (1, h)):
-        cut = SPLIT_STEP
+        cut = step
         while cut < span - gap:
             rest = span - cut - gap
             if axis == 0:
@@ -190,7 +191,7 @@ def nest(part, sheet_l, sheet_w, gap=5.0, margin=0.0):
             if c1 + c2 > count:
                 count = c1 + c2
                 plan = [(0.0, 0.0, p) for p in (p1,) if p] + [(*offset, p) for p in (p2,) if p]
-            cut += SPLIT_STEP
+            cut += step
 
     shapes = []
     for ox, oy, params in plan:
@@ -203,4 +204,4 @@ def _shift(shape, dx, dy):
     if shape[0] == "circle":
         _, x, y, r = shape
         return ("circle", x + dx, y + dy, r)
-    return ("poly", [(x + dx, y + dy) for x, y in shape[1]])
+    return (shape[0], [(x + dx, y + dy) for x, y in shape[1]])

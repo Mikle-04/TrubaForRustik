@@ -1,1 +1,4 @@
 sv-ttk==2.6.1
+ezdxf==1.4.5
+shapely==2.2.0
+pyclipper==1.4.0
