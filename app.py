@@ -426,8 +426,8 @@ class App(tk.Tk):
             self.template_note.configure(text="")
 
     def _read_margins(self):
-        """(слева, справа, сверху, снизу) в мм."""
-        return tuple(num(self.margins[key].get(), f"Отступ {name}") for key, name in SIDES)
+        """(слева, справа, сверху, снизу) в мм; пустое поле — без отступа."""
+        return tuple(num(self.margins[key].get().strip() or "0", f"Отступ {name}") for key, name in SIDES)
 
     @staticmethod
     def _as_template(gap, margins):
