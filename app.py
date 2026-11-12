@@ -1,11 +1,12 @@
 """Расчёт заготовки, угара, отхода и металлолома по раскладке на листе."""
 
+import json
 import os
 import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import filedialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import sv_ttk
 
@@ -43,8 +44,35 @@ def resource(path):
     return os.path.join(base, path)
 
 
+def templates_path():
+    """Файл шаблонов раскладки — рядом с .exe (или с app.py при запуске из исходников)."""
+    base = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
+            else os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "шаблоны.json")
+
+
+def load_templates():
+    """{имя: {"gap": "…", "margin": "…"}}; нет файла или он битый — пустой список."""
+    try:
+        with open(templates_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {name: t for name, t in data.items() if isinstance(t, dict)}
+
+
+def save_templates(templates):
+    with open(templates_path(), "w", encoding="utf-8") as f:
+        json.dump(templates, f, ensure_ascii=False, indent=2)
+
+
 def fmt(value, digits=3):
     return f"{value:.{digits}f}".replace(".", ",")
+
+
+def short(value):
+    """Число без лишних нулей и с запятой: 14 → «14», 2.5 → «2,5»."""
+    return f"{value:g}".replace(".", ",")
 
 
 def num(text, name):
@@ -344,15 +372,94 @@ class App(tk.Tk):
         card.pack(fill="x", pady=(8, 0))
         self.gap = tk.StringVar(value="5")
         self.margin = tk.StringVar(value="0")
-        self._entry(card, 1, "Зазор между деталями, мм", self.gap)
-        self._entry(card, 2, "Отступ от края, мм", self.margin)
+        # Шаблон — сохранённая пара «зазор + отступ»; имя вписывается прямо в список
+        self.templates = load_templates()
+        self.template = tk.StringVar()
+        ttk.Label(card, text="Шаблон").grid(row=1, column=0, sticky="w", pady=1)
+        self.template_box = ttk.Combobox(card, textvariable=self.template, width=22,
+                                         values=sorted(self.templates))
+        self.template_box.grid(row=1, column=1, columnspan=3, sticky="w", pady=1)
+        self.template_box.bind("<<ComboboxSelected>>", lambda _: self._apply_template())
+        buttons = ttk.Frame(card)
+        buttons.grid(row=2, column=1, columnspan=4, sticky="w", pady=(2, 4))
+        ttk.Button(buttons, text="Сохранить", command=self._save_template).pack(side="left")
+        ttk.Button(buttons, text="Удалить", command=self._delete_template).pack(side="left", padx=(6, 0))
+        self.template_note = ttk.Label(buttons, style="Ok.TLabel")
+        self.template_note.pack(side="left", padx=(8, 0))
+        self._entry(card, 3, "Зазор между деталями, мм", self.gap)
+        self._entry(card, 4, "Отступ от края, мм", self.margin)
         self.manual = tk.BooleanVar(value=False)
         self.manual_count = tk.StringVar()
         ttk.Checkbutton(card, text="Кол-во на листе вручную", variable=self.manual,
                         style="Switch.TCheckbutton", command=self._toggle_manual
-                        ).grid(row=3, column=0, sticky="w", pady=(6, 2))
+                        ).grid(row=5, column=0, sticky="w", pady=(6, 2))
         self.manual_entry = ttk.Entry(card, textvariable=self.manual_count, width=12, state="disabled")
-        self.manual_entry.grid(row=3, column=1, columnspan=3, sticky="w", pady=(6, 2))
+        self.manual_entry.grid(row=5, column=1, columnspan=3, sticky="w", pady=(6, 2))
+
+    def _apply_template(self):
+        """Выбран шаблон — его зазор и отступ уходят в поля; править их можно, шаблон не меняется."""
+        t = self.templates.get(self.template.get())
+        if t:
+            self.gap.set(t.get("gap", ""))
+            self.margin.set(t.get("margin", ""))
+            self.template_note.configure(text="")
+
+    def _template_values(self):
+        gap = num(self.gap.get(), "Зазор")
+        margin = num(self.margin.get(), "Отступ от края")
+        return {"gap": short(gap), "margin": short(margin)}
+
+    def _save_template(self):
+        self.error.configure(text="")
+        name = self.template.get().strip()
+        if not name:
+            self.error.configure(text="Впишите имя шаблона в поле «Шаблон»")
+            return
+        try:
+            values = self._template_values()
+        except ValueError as e:
+            self.error.configure(text=str(e))
+            return
+        if name in self.templates and self.templates[name] != values and not messagebox.askyesno(
+                APP_NAME, f"Шаблон «{name}» уже есть. Заменить его текущими значениями?", parent=self):
+            return
+        templates = {**self.templates, name: values}
+        try:
+            save_templates(templates)
+        except OSError as e:
+            self.error.configure(text=f"Не удалось сохранить шаблон: {e}")
+            return
+        self.templates = templates
+        self.template.set(name)
+        self.template_box.configure(values=sorted(templates))
+        self.template_note.configure(text="✓ Сохранено")
+
+    def _delete_template(self):
+        self.error.configure(text="")
+        name = self.template.get().strip()
+        if name not in self.templates:
+            self.error.configure(text="Выберите в списке шаблон, который нужно удалить")
+            return
+        if not messagebox.askyesno(APP_NAME, f"Удалить шаблон «{name}»?", parent=self):
+            return
+        templates = {k: v for k, v in self.templates.items() if k != name}
+        try:
+            save_templates(templates)
+        except OSError as e:
+            self.error.configure(text=f"Не удалось удалить шаблон: {e}")
+            return
+        self.templates = templates
+        self.template.set("")
+        self.template_box.configure(values=sorted(templates))
+        self.template_note.configure(text="✓ Удалено")
+
+    def _nest_title(self, gap, margin):
+        """Строка «зазор 14 мм, отступ 10 мм (шаблон «…»)» для результата."""
+        text = f"зазор {short(gap)} мм, отступ {short(margin)} мм"
+        name = self.template.get().strip()
+        if self.templates.get(name) == {"gap": short(gap), "margin": short(margin)}:
+            text += f" (шаблон «{name}»)"
+        return text
 
     def _build_result_card(self, root):
         card = self._card(root, "Результат")
@@ -461,6 +568,7 @@ class App(tk.Tk):
             margin = num(self.margin.get(), "Отступ от края")
             if part_mass == 0:
                 raise ValueError("Укажите массу детали")
+            nest_title = self._nest_title(gap, margin)
             manual = int(num(self.manual_count.get(), "Количество на листе")) if self.manual.get() else None
         except ValueError as e:
             self.error.configure(text=str(e))
@@ -513,7 +621,8 @@ class App(tk.Tk):
             self.layout = result["layout"]
             self.sheet_size = (length, width)
             self._draw()
-            self._show_result(thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual)
+            self._show_result(thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual,
+                              nest_title)
 
         wait()
 
@@ -521,7 +630,8 @@ class App(tk.Tk):
         CANCEL.set()
         self.run_btn.configure(state="disabled")
 
-    def _show_result(self, thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual):
+    def _show_result(self, thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual,
+                     nest_title):
         count = manual if manual is not None else self.layout.count
         source = (f"вручную (программа разложила {self.layout.count})" if manual is not None
                   else "раскладка программы")
@@ -541,7 +651,8 @@ class App(tk.Tk):
         self.summary.configure(text=(
             f"Лист {title} — {fmt(m_sheet)} кг{mass_note}\n"
             f"Деталь: {part_title} — {fmt(part_mass)} кг\n"
-            f"На листе: {count} шт — {source}"))
+            f"На листе: {count} шт — {source}\n"
+            f"Раскладка: {nest_title}"))
         for key, _, _ in METRICS:
             value, sub = self.metric_labels[key]
             v = getattr(r, key)
@@ -558,6 +669,7 @@ class App(tk.Tk):
             f"Деталь:      {part_title}",
             f"Масса детали (Мд): {fmt(part_mass)} кг",
             f"На листе:    {count} шт — {source}",
+            f"Раскладка:   {nest_title}",
             "",
             "На 1 деталь:",
         ] + [f"  {t} ({s}) = {fmt(getattr(r, k))} кг" for k, t, s in METRICS]
