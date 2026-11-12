@@ -105,6 +105,7 @@ class App(tk.Tk):
         self.minsize(1000, 560)
         sv_ttk.set_theme("light")
         self._styles()
+        self._edit_hotkeys()
         self.layout = None
         self.busy = False
         self.dxf = None           # загруженный чертёж (DxfDrawing)
@@ -151,6 +152,30 @@ class App(tk.Tk):
         s.configure("Big.TButton", font=(FONT, 11, "bold"))
         s.configure("PinValue.TLabel", font=(FONT, 16, "bold"))
         s.configure("Link.TLabel", font=(FONT, 10, "underline"), foreground=ACCENT)
+
+    def _edit_hotkeys(self):
+        """Ctrl+A/C/V/X во всех полях при любой раскладке.
+
+        В Tk Ctrl+A в поле переводит курсор в начало строки, а при русской раскладке
+        Ctrl+A/C/V/X не срабатывают вовсе: Tk видит «ф», «с», «м», «ч». Поэтому клавишу
+        определяем по физическому коду (Windows virtual-key), а не по символу.
+        """
+        virtual = {67: "<<Copy>>", 86: "<<Paste>>", 88: "<<Cut>>"}
+
+        def hotkey(event):
+            w = event.widget
+            if event.keycode == 65:
+                w.select_range(0, "end")
+                w.icursor("end")
+                return "break"
+            if event.keycode in virtual:
+                w.event_generate(virtual[event.keycode])
+                return "break"
+            return None
+
+        for cls in ("TEntry", "TCombobox"):
+            for seq in ("<Control-KeyPress>", "<Control-Key-a>", "<Control-Key-A>"):
+                self.bind_class(cls, seq, hotkey)
 
     def show_developer(self):
         """Страница «От разработчика» поверх всего окна; «Назад» или Esc — вернуться."""
