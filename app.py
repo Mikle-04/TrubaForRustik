@@ -1,6 +1,7 @@
 """Расчёт заготовки, угара, отхода и металлолома по раскладке на листе."""
 
 import json
+import math
 import os
 import sys
 import threading
@@ -13,11 +14,12 @@ import sv_ttk
 from calc import calculate
 from dxf_import import DxfError, load_dxf
 from free_nesting import FreeShape
-from nesting import CANCEL, Cancelled, Circle, Gusset, Plate, nest
+from nesting import CANCEL, Cancelled, Circle, Gusset, Plate, _cut_corners, nest
 from sheets import GRADES, SHEET_L, SHEET_W, THICKNESSES, sheet_mass, sheet_name
 
 PART_TYPES = {
-    "Фланец": [("Диаметр, мм", "400")],
+    "Фланец": [("Диаметр, мм", "400"), ("Центр. отверстие Ø, мм", "0"),
+               ("Отверстия Ø, мм", "0"), ("Кол-во отверстий, шт", "0")],
     "Пластина": [("Длина, мм", "200"), ("Ширина, мм", "100")],
     "Косынка": [("Катет 1, мм", "130"), ("Катет 2, мм", "80"), ("Срез углов, мм", "10")],
     "DXF": [],  # контур из файла — свои поля, см. _build_dxf_fields
@@ -94,6 +96,25 @@ def num(text, name):
     if value < 0:
         raise ValueError(f"«{name}»: не может быть отрицательным")
     return value
+
+
+def part_area(kind, values):
+    """Площадь детали по размерам, мм² (без отверстий)."""
+    if kind == "Фланец":
+        d, center, hole, holes = values
+        if holes != int(holes):
+            raise ValueError("Кол-во отверстий — целое число")
+        if center >= d or hole >= d:
+            raise ValueError("Отверстие больше фланца")
+        area = math.pi / 4 * (d * d - center * center - holes * hole * hole)
+        if area <= 0:
+            raise ValueError("Отверстия занимают весь фланец")
+        return area
+    if kind == "Пластина":
+        return values[0] * values[1]
+    a, b, cut = values
+    pts = _cut_corners([(0, 0), (a, 0), (0, b)], cut)
+    return abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]))) / 2
 
 
 class App(tk.Tk):
@@ -290,7 +311,7 @@ class App(tk.Tk):
         for var in (self.thickness, self.grade, self.sheet_w, self.sheet_l):
             var.trace_add("write", lambda *_: self._update_sheet_mass())
         for var in (self.thickness, self.grade):
-            var.trace_add("write", lambda *_: self._update_dxf_info())
+            var.trace_add("write", lambda *_: self._update_mass())
         self._update_sheet_mass()
 
     def _build_part_card(self, form):
@@ -303,21 +324,25 @@ class App(tk.Tk):
             ttk.Radiobutton(types, text=name, value=name, variable=self.part_type,
                             style="Toggle.TButton", command=self._show_dims, width=8
                             ).pack(side="left", padx=(0, 6))
-        # Поля размеров всех типов создаются сразу (строки 2–4), видны только поля выбранного
+        # Поля размеров всех типов создаются сразу (строки 2–5), видны только поля выбранного
         self.dims, self.dim_widgets = {}, {}
         for name, fields in PART_TYPES.items():
             self.dims[name] = [tk.StringVar(value=v) for _, v in fields]
             self.dim_widgets[name] = [w for i, ((label, _), var) in enumerate(zip(fields, self.dims[name]))
                                       for w in self._entry(card, 2 + i, label, var)]
         self.dim_widgets["DXF"] = self._build_dxf_fields(card)
-        self.part_mass = tk.StringVar(value="11")
+        for var in (v for vs in self.dims.values() for v in vs):
+            var.trace_add("write", lambda *_: self._update_mass())
+        self.part_mass = tk.StringVar()
         self.drawing_qty = tk.StringVar(value="1")
-        # строки 2–4 — под размеры детали (до трёх полей)
-        self.mass_caption, _ = self._entry(card, 5, "Масса по чертежу, кг", self.part_mass)
-        self.mass_reset = ttk.Button(card, text="↺", width=3, command=self._reset_dxf_mass)
-        self.mass_reset.grid(row=5, column=4, sticky="w", padx=(6, 0))
-        self._entry(card, 6, "Кол-во на чертеже, шт", self.drawing_qty)
-        # В режиме DXF масса берётся по контуру, пока её не впишут руками
+        # строки 2–5 — под размеры детали (до четырёх полей)
+        self._entry(card, 6, "Масса детали, кг", self.part_mass)
+        ttk.Button(card, text="↺", width=3, command=self._reset_mass).grid(
+            row=6, column=4, sticky="w", padx=(6, 0))
+        self.mass_info = ttk.Label(card, style="Muted.TLabel", justify="left")
+        self.mass_info.grid(row=7, column=0, columnspan=5, sticky="w", pady=1)
+        self._entry(card, 8, "Кол-во на чертеже, шт", self.drawing_qty)
+        # Масса считается по размерам (у DXF — по контуру), пока её не впишут руками
         self.mass_auto = True
         self._mass_by_program = False
         self.part_mass.trace_add("write", lambda *_: self._mass_edited())
@@ -394,14 +419,44 @@ class App(tk.Tk):
         self.dxf_info.configure(text="\n".join(lines))
 
     def _mass_edited(self):
-        """Масса изменена руками — в режиме DXF больше не подменяем её массой по контуру."""
-        if not self._mass_by_program and self.part_type.get() == "DXF" and self.dxf:
-            self.mass_auto = False
-            self._update_dxf_info()
+        """Масса изменена руками — больше не подменяем её расчётной."""
+        if self._mass_by_program or (self.part_type.get() == "DXF" and not self.dxf):
+            return
+        self.mass_auto = False
+        self._update_mass()
 
-    def _reset_dxf_mass(self):
+    def _reset_mass(self):
         self.mass_auto = True
-        self._update_dxf_info()
+        self._update_mass()
+
+    def _dim_values(self, kind):
+        """Размеры детали из полей; пустое поле отверстий фланца — нет отверстий."""
+        fields = zip(PART_TYPES[kind], self.dims[kind])
+        return [num(v.get().strip() or ("0" if kind == "Фланец" and i else ""), label)
+                for i, ((label, _), v) in enumerate(fields)]
+
+    def _update_mass(self):
+        """Масса по размерам (у DXF — по контуру) уходит в поле, пока её не вписали руками."""
+        kind = self.part_type.get()
+        if kind == "DXF":
+            self.mass_info.grid_remove()
+            self._update_dxf_info()
+            return
+        self.mass_info.grid()
+        try:
+            thickness = num(self.thickness.get(), "Толщина")
+            mass = part_area(kind, self._dim_values(kind)) * thickness * GRADES[self.grade.get()] / 1e9
+        except (ValueError, ZeroDivisionError):
+            self.mass_info.configure(text="")
+            return
+        if self.mass_auto:
+            self._mass_by_program = True
+            self.part_mass.set(fmt(mass))
+            self._mass_by_program = False
+        text = f"По размерам: {fmt(mass)} кг"
+        if not self.mass_auto:
+            text += "\nВ расчёте — масса, вписанная вручную (↺ — вернуть по размерам)"
+        self.mass_info.configure(text=text)
 
     def _build_nest_card(self, form):
         card = self._card(form, "Раскладка")
@@ -565,20 +620,15 @@ class App(tk.Tk):
         self.pin = None
 
     def _show_dims(self):
-        dxf = self.part_type.get() == "DXF"
         for name, widgets in self.dim_widgets.items():
             for w in widgets:
                 if name == self.part_type.get():
                     w.grid()
                 else:
                     w.grid_remove()
-        # для DXF масса считается по контуру — подпись без «по чертежу», есть ↺
-        self.mass_caption.configure(text="Масса детали, кг" if dxf else "Масса по чертежу, кг")
-        if dxf:
-            self.mass_reset.grid()
-            self._update_dxf_info()
-        else:
-            self.mass_reset.grid_remove()
+        # другая деталь — масса снова по её размерам
+        self.mass_auto = True
+        self._update_mass()
         if hasattr(self, "common_check"):
             self._update_common()
 
@@ -626,11 +676,18 @@ class App(tk.Tk):
             part = self.free_parts.setdefault(key, FreeShape(shape.polygon))
             part.common = self._common_on()
             return part, f"{self.dxf.name} ({shape.width:.0f}×{shape.height:.0f})"
-        values = [num(v.get(), label) for (label, _), v in zip(PART_TYPES[kind], self.dims[kind])]
-        if any(v == 0 for v in values[:2]):
+        values = self._dim_values(kind)
+        if any(v == 0 for v in values[:1 if kind == "Фланец" else 2]):
             raise ValueError("Размеры детали должны быть больше нуля")
         if kind == "Фланец":
-            return Circle(values[0]), f"фланец Ø{values[0]:g}"
+            d, center, hole, holes = values
+            part_area(kind, values)
+            title = f"фланец Ø{d:g}"
+            if center:
+                title += f", центр Ø{center:g}"
+            if hole and holes:
+                title += f", {holes:g} отв. Ø{hole:g}"
+            return Circle(d), title
         if kind == "Пластина":
             return Plate(values[0], values[1], self._common_on()), f"пластина {values[0]:g}×{values[1]:g}"
         a, b, cut = values
