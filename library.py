@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 
 SECTIONS = ["Фланцы", "Косынки", "Перегородки", "Другие детали"]
@@ -34,6 +35,25 @@ def load_library():
 def save_library(items):
     with open(library_path(), "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False, indent=2)
+
+
+NUMBER = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def matches(item, query):
+    """Поиск по словам: все слова запроса есть в названии или описании, в любом порядке.
+
+    Число ищется как отдельное число («15» не находит 150, 1500 и 1,5),
+    остальное — как кусок текста («кос» находит «косынка»). Запятая и точка равны.
+    """
+    text = f"{item['name']} {item.get('part', '')}".lower().replace(",", ".")
+    for word in query.lower().replace(",", ".").split():
+        if NUMBER.fullmatch(word):
+            if not re.search(rf"(?<![\d.]){re.escape(word)}(?![\d]|\.\d)", text):
+                return False
+        elif word not in text:
+            return False
+    return True
 
 
 def unique_name(name, items, skip=None):

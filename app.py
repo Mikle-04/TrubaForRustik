@@ -14,7 +14,7 @@ import sv_ttk
 from calc import calculate
 from dxf_import import DxfError, load_dxf
 from free_nesting import FreeShape
-from library import DEFAULT_SECTION, SECTIONS, load_library, save_library, unique_name
+from library import DEFAULT_SECTION, SECTIONS, load_library, matches, save_library, unique_name
 from nesting import CANCEL, Cancelled, Circle, Gusset, Plate, Trapezoid, _cut_corners, nest
 from sheets import GRADES, SHEET_L, SHEET_W, THICKNESSES, sheet_mass, sheet_name
 
@@ -1048,7 +1048,9 @@ class App(tk.Tk):
         top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         ttk.Label(top, text="Поиск").pack(side="left")
         self.lib_search = tk.StringVar()
-        ttk.Entry(top, textvariable=self.lib_search, width=28).pack(side="left", padx=(8, 16))
+        ttk.Entry(top, textvariable=self.lib_search, width=28).pack(side="left", padx=(8, 8))
+        self.lib_found = ttk.Label(top, style="Muted.TLabel", width=18)
+        self.lib_found.pack(side="left", padx=(0, 8))
         self.lib_search.trace_add("write", lambda *_: self._fill_library())
         self.lib_filter = tk.StringVar(value="Все")
         for name in ["Все"] + SECTIONS:
@@ -1085,17 +1087,21 @@ class App(tk.Tk):
         tree = self.lib_tree
         select = select or self.lib_item
         tree.delete(*tree.get_children())
-        query = self.lib_search.get().strip().lower()
+        query = self.lib_search.get().strip()
         shown = SECTIONS if self.lib_filter.get() == "Все" else [self.lib_filter.get()]
+        found = total = 0
         for section in shown:
-            items = [(i, it) for i, it in enumerate(self.library) if it["section"] == section
-                     and (query in it["name"].lower() or query in it.get("part", "").lower())]
+            in_section = [(i, it) for i, it in enumerate(self.library) if it["section"] == section]
+            items = [(i, it) for i, it in in_section if matches(it, query)]
+            total += len(in_section)
+            found += len(items)
             if query and not items:
                 continue
             tree.insert("", "end", iid=section, text=f"{section} ({len(items)})", open=True)
             for i, it in sorted(items, key=lambda p: p[1]["name"].lower()):
                 tree.insert(section, "end", iid=f"item{i}", text=it["name"],
                             values=[fmt(it.get(k, 0)) for k in ("mass", "blank", "burn", "waste", "scrap")])
+        self.lib_found.configure(text=f"Найдено {found} из {total}" if query else f"Всего {total}")
         if select is not None and any(it is select for it in self.library):
             iid = f"item{next(i for i, it in enumerate(self.library) if it is select)}"
             if tree.exists(iid):
