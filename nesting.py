@@ -111,6 +111,52 @@ class Plate:
         return out
 
 
+# ---------- Трапеция (пластина с разными основаниями) ----------
+
+@dataclass
+class Trapezoid:
+    h: float          # высота (длина детали)
+    b1: float         # основание внизу
+    b2: float         # основание вверху
+    common: bool = False  # общий рез: соседние трапеции встык
+
+    def _pitch(self, g):
+        """Полоса из чередующихся трапеций «основанием вниз / вверх», скос к скосу.
+
+        Перевёрнутая сдвинута на x0, следующая пара — на шаг p; между скосами по нормали — g.
+        """
+        big, small = max(self.b1, self.b2), min(self.b1, self.b2)
+        d = (big - small) / 2
+        delta = 0.0 if self.common else g * math.hypot(self.h, d) / self.h
+        return big, small, d, big - d + delta, big + small + 2 * delta
+
+    def best(self, w, h, g):
+        big, _, _, x0, p = self._pitch(g)
+        row = self.h + (0.0 if self.common else g)
+        best = (0, None)
+        for tw, th, swap in ((w, h, False), (h, w, True)):
+            count = fit(th, self.h, row) * (fit(tw, big, p) + fit(tw - x0, big, p))
+            if count > best[0]:
+                best = (count, (swap, tw, th))
+        return best
+
+    def build(self, params, g):
+        swap, tw, th = params
+        big, small, d, x0, p = self._pitch(g)
+        row = self.h + (0.0 if self.common else g)
+        hh = self.h
+        out = []
+        for j in range(fit(th, hh, row)):
+            y = j * row
+            shapes = [[(x, y), (x + big, y), (x + big - d, y + hh), (x + d, y + hh)]
+                      for x in (k * p for k in range(fit(tw, big, p)))]
+            shapes += [[(x + d, y), (x + d + small, y), (x + big, y + hh), (x, y + hh)]
+                       for x in (x0 + k * p for k in range(fit(tw - x0, big, p)))]
+            for pts in shapes:
+                out.append(("poly", [(py, px) for px, py in pts] if swap else pts))
+        return out
+
+
 # ---------- Косынка (прямоугольный треугольник со срезанными углами) ----------
 
 @dataclass

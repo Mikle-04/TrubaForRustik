@@ -14,13 +14,13 @@ import sv_ttk
 from calc import calculate
 from dxf_import import DxfError, load_dxf
 from free_nesting import FreeShape
-from nesting import CANCEL, Cancelled, Circle, Gusset, Plate, _cut_corners, nest
+from nesting import CANCEL, Cancelled, Circle, Gusset, Plate, Trapezoid, _cut_corners, nest
 from sheets import GRADES, SHEET_L, SHEET_W, THICKNESSES, sheet_mass, sheet_name
 
 PART_TYPES = {
     "Фланец": [("Диаметр, мм", "400"), ("Центр. отверстие Ø, мм", "0"),
                ("Отверстия Ø, мм", "0"), ("Кол-во отверстий, шт", "0")],
-    "Пластина": [("Длина, мм", "200"), ("Ширина, мм", "100")],
+    "Пластина": [("Длина, мм", "200"), ("Ширина, мм", "100"), ("Ширина вверху, мм", "100")],
     "Косынка": [("Катет 1, мм", "130"), ("Катет 2, мм", "80"), ("Срез углов, мм", "10")],
     "DXF": [],  # контур из файла — свои поля, см. _build_dxf_fields
 }
@@ -111,6 +111,8 @@ def part_area(kind, values):
             raise ValueError("Отверстия занимают весь фланец")
         return area
     if kind == "Пластина":
+        if len(values) == 3:  # трапеция: длина × средняя ширина
+            return values[0] * (values[1] + values[2]) / 2
         return values[0] * values[1]
     a, b, cut = values
     pts = _cut_corners([(0, 0), (a, 0), (0, b)], cut)
@@ -331,6 +333,13 @@ class App(tk.Tk):
             self.dim_widgets[name] = [w for i, ((label, _), var) in enumerate(zip(fields, self.dims[name]))
                                       for w in self._entry(card, 2 + i, label, var)]
         self.dim_widgets["DXF"] = self._build_dxf_fields(card)
+        # Пластина с разными основаниями (коническая) — трапеция; третье поле только при включённом
+        self.trapezoid = tk.BooleanVar(value=False)
+        switch = ttk.Checkbutton(card, text="Разные основания (трапеция)", variable=self.trapezoid,
+                                 style="Switch.TCheckbutton",
+                                 command=lambda: (self._update_plate_fields(), self._update_mass()))
+        switch.grid(row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        self.dim_widgets["Пластина"].append(switch)
         for var in (v for vs in self.dims.values() for v in vs):
             var.trace_add("write", lambda *_: self._update_mass())
         self.part_mass = tk.StringVar()
@@ -431,7 +440,9 @@ class App(tk.Tk):
 
     def _dim_values(self, kind):
         """Размеры детали из полей; пустое поле отверстий фланца — нет отверстий."""
-        fields = zip(PART_TYPES[kind], self.dims[kind])
+        fields = list(zip(PART_TYPES[kind], self.dims[kind]))
+        if kind == "Пластина" and not self.trapezoid.get():
+            fields = fields[:2]
         return [num(v.get().strip() or ("0" if kind == "Фланец" and i else ""), label)
                 for i, ((label, _), v) in enumerate(fields)]
 
@@ -626,11 +637,23 @@ class App(tk.Tk):
                     w.grid()
                 else:
                     w.grid_remove()
+        self._update_plate_fields()
         # другая деталь — масса снова по её размерам
         self.mass_auto = True
         self._update_mass()
         if hasattr(self, "common_check"):
             self._update_common()
+
+    def _update_plate_fields(self):
+        """Трапеция: «Ширина» становится «Ширина внизу», появляется «Ширина вверху»."""
+        widgets = self.dim_widgets["Пластина"]
+        on = self.trapezoid.get()
+        widgets[2].configure(text="Ширина внизу, мм" if on else "Ширина, мм")
+        for w in widgets[4:6]:
+            if on and self.part_type.get() == "Пластина":
+                w.grid()
+            else:
+                w.grid_remove()
 
     def _update_common(self):
         """Что даёт общий рез для выбранной детали; у кругов общей линии нет — выключен."""
@@ -689,6 +712,12 @@ class App(tk.Tk):
                 title += f", {holes:g} отв. Ø{hole:g}"
             return Circle(d), title
         if kind == "Пластина":
+            if len(values) == 3 and values[1] != values[2]:
+                length, bottom, top = values
+                if top == 0:
+                    raise ValueError("Размеры детали должны быть больше нуля")
+                return (Trapezoid(length, bottom, top, self._common_on()),
+                        f"пластина {length:g}×{bottom:g}/{top:g} (трапеция)")
             return Plate(values[0], values[1], self._common_on()), f"пластина {values[0]:g}×{values[1]:g}"
         a, b, cut = values
         if cut * 2 >= min(a, b):
