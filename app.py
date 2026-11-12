@@ -734,7 +734,8 @@ class App(tk.Tk):
             "На 1 деталь:",
         ] + [f"  {t} ({s}) = {fmt(getattr(r, k))} кг" for k, t, s in METRICS]
         if qty != 1:
-            lines += ["", f"На {qty:g} шт по чертежу:"] + [
+            lines += ["", f"На {qty:g} шт по чертежу:",
+                      f"  Масса детали (Мд) = {fmt(part_mass * qty)} кг"] + [
                 f"  {t} ({s}) = {fmt(getattr(r, k) * qty)} кг" for k, t, s in METRICS]
         self.report = "\n".join(lines)
         self._update_pin()
@@ -774,7 +775,7 @@ class App(tk.Tk):
             return
         sheet, m_sheet, part, m_part, count, blank, burn, waste, scrap, qty = self.values
         ttk.Label(body, style="Muted.TLabel", justify="left",
-                  text=f"{sheet}\n{part} · Мд {fmt(m_part)} кг\nНа листе: {count} шт"
+                  text=f"{sheet}\n{part}\nНа листе: {count} шт"
                   ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
         status = ttk.Label(body, style="Muted.TLabel", text="Клик по числу — скопировать")
         cols = [("на 1 шт", 1)] + ([(f"на {qty:g} шт", qty)] if qty != 1 else [])
@@ -782,7 +783,9 @@ class App(tk.Tk):
             for c, (title, _) in enumerate(cols, start=1):
                 ttk.Label(body, text=title, style="Caption.TLabel").grid(
                     row=1, column=c, sticky="e", padx=(16, 0))
-        for row, ((_, name, short), v) in enumerate(zip(METRICS, (blank, burn, waste, scrap)), start=2):
+        rows = [("Масса детали", "Мд", m_part)] + [
+            (name, short, v) for (_, name, short), v in zip(METRICS, (blank, burn, waste, scrap))]
+        for row, (name, short, v) in enumerate(rows, start=2):
             ttk.Label(body, text=f"{name} · {short}", style="Info.TLabel").grid(row=row, column=0, sticky="w")
             for c, (_, k) in enumerate(cols, start=1):
                 text = fmt(v * k)
@@ -792,7 +795,7 @@ class App(tk.Tk):
                 value.bind("<Button-1>", lambda _, t=text, n=short: (
                     self.clipboard_clear(), self.clipboard_append(t),
                     status.configure(text=f"✓ Скопировано: {n} = {t}", style="Ok.TLabel")))
-        status.grid(row=len(METRICS) + 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        status.grid(row=len(rows) + 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     def _to_clipboard(self, text, note):
         self.clipboard_clear()
