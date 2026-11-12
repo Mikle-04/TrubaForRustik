@@ -1062,10 +1062,10 @@ class App(tk.Tk):
         cols = [("mass", "Мд, кг")] + [(key, f"{s}, кг") for key, _, s in METRICS]
         tree = ttk.Treeview(holder, columns=[c for c, _ in cols], selectmode="browse")
         tree.heading("#0", text="Название")
-        tree.column("#0", width=380, minwidth=200)
+        tree.column("#0", width=260, minwidth=180, stretch=True)
         for c, title in cols:
             tree.heading(c, text=title)
-            tree.column(c, width=80, minwidth=60, anchor="e", stretch=False)
+            tree.column(c, width=70, minwidth=60, anchor="e", stretch=False)
         scroll = ttk.Scrollbar(holder, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=scroll.set)
         tree.grid(row=0, column=0, sticky="nsew")
