@@ -181,9 +181,14 @@ class Layout:
     shapes: list
 
 
-def nest(part, sheet_l, sheet_w, gap=5.0, margin=0.0):
-    """Максимум деталей на листе: один рисунок или два рисунка в двух зонах."""
-    w, h = sheet_l - 2 * margin, sheet_w - 2 * margin
+def nest(part, sheet_l, sheet_w, gap=5.0, margins=(0.0, 0.0, 0.0, 0.0)):
+    """Максимум деталей на листе: один рисунок или два рисунка в двух зонах.
+
+    margins — отступы от краёв (слева, справа, сверху, снизу) как на картинке:
+    слева/справа — по длине листа, сверху/снизу — по ширине.
+    """
+    left, right, top, bottom = margins
+    w, h = sheet_l - left - right, sheet_w - top - bottom
     count, params = part.best(w, h, gap)
     plan = [(0.0, 0.0, params)] if params else []
 
@@ -210,7 +215,7 @@ def nest(part, sheet_l, sheet_w, gap=5.0, margin=0.0):
     shapes = []
     for ox, oy, params in plan:
         for shape in part.build(params, gap):
-            shapes.append(_shift(shape, ox + margin, oy + margin))
+            shapes.append(_shift(shape, ox + left, oy + top))
     return Layout(count, shapes)
 
 

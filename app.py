@@ -23,6 +23,9 @@ PART_TYPES = {
     "DXF": [],  # контур из файла — свои поля, см. _build_dxf_fields
 }
 
+# Отступы от краёв листа в порядке, в котором их принимает nest(); стороны — как на картинке
+SIDES = [("left", "слева"), ("right", "справа"), ("top", "сверху"), ("bottom", "снизу")]
+
 METRICS = [
     ("blank", "Масса заготовки", "Мз"),
     ("burn", "Угар", "У"),
@@ -52,13 +55,21 @@ def templates_path():
 
 
 def load_templates():
-    """{имя: {"gap": "…", "margin": "…"}}; нет файла или он битый — пустой список."""
+    """{имя: {"gap": "…", "left": "…", "right": "…", "top": "…", "bottom": "…"}};
+    нет файла или он битый — пустой список."""
     try:
         with open(templates_path(), encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError):
         return {}
-    return {name: t for name, t in data.items() if isinstance(t, dict)}
+    templates = {}
+    for name, t in data.items():
+        if not isinstance(t, dict):
+            continue
+        if "margin" in t:  # первые шаблоны: один отступ на все стороны
+            t = {"gap": t.get("gap", ""), **{key: t["margin"] for key, _ in SIDES}}
+        templates[name] = t
+    return templates
 
 
 def save_templates(templates):
@@ -371,8 +382,8 @@ class App(tk.Tk):
         card = self._card(form, "Раскладка")
         card.pack(fill="x", pady=(8, 0))
         self.gap = tk.StringVar(value="5")
-        self.margin = tk.StringVar(value="0")
-        # Шаблон — сохранённая пара «зазор + отступ»; имя вписывается прямо в список
+        self.margins = {key: tk.StringVar(value="0") for key, _ in SIDES}
+        # Шаблон — сохранённые зазор и отступы; имя вписывается прямо в список
         self.templates = load_templates()
         self.template = tk.StringVar()
         ttk.Label(card, text="Шаблон").grid(row=1, column=0, sticky="w", pady=1)
@@ -387,27 +398,43 @@ class App(tk.Tk):
         self.template_note = ttk.Label(buttons, style="Ok.TLabel")
         self.template_note.pack(side="left", padx=(8, 0))
         self._entry(card, 3, "Зазор между деталями, мм", self.gap)
-        self._entry(card, 4, "Отступ от края, мм", self.margin)
+        # отступы парами, как «Ширина × длина» у листа
+        for row, pair in ((4, SIDES[:2]), (5, SIDES[2:])):
+            (k1, n1), (k2, n2) = pair
+            ttk.Label(card, text=f"Отступ {n1} / {n2}, мм").grid(
+                row=row, column=0, sticky="w", pady=1, padx=(0, 10))
+            fields = ttk.Frame(card)
+            fields.grid(row=row, column=1, columnspan=3, sticky="w", pady=1)
+            ttk.Entry(fields, textvariable=self.margins[k1], width=6).pack(side="left")
+            ttk.Label(fields, text="/").pack(side="left", padx=4)
+            ttk.Entry(fields, textvariable=self.margins[k2], width=6).pack(side="left")
         self.manual = tk.BooleanVar(value=False)
         self.manual_count = tk.StringVar()
         ttk.Checkbutton(card, text="Кол-во на листе вручную", variable=self.manual,
                         style="Switch.TCheckbutton", command=self._toggle_manual
-                        ).grid(row=5, column=0, sticky="w", pady=(6, 2))
+                        ).grid(row=6, column=0, sticky="w", pady=(6, 2))
         self.manual_entry = ttk.Entry(card, textvariable=self.manual_count, width=12, state="disabled")
-        self.manual_entry.grid(row=5, column=1, columnspan=3, sticky="w", pady=(6, 2))
+        self.manual_entry.grid(row=6, column=1, columnspan=3, sticky="w", pady=(6, 2))
 
     def _apply_template(self):
-        """Выбран шаблон — его зазор и отступ уходят в поля; править их можно, шаблон не меняется."""
+        """Выбран шаблон — его зазор и отступы уходят в поля; править их можно, шаблон не меняется."""
         t = self.templates.get(self.template.get())
         if t:
             self.gap.set(t.get("gap", ""))
-            self.margin.set(t.get("margin", ""))
+            for key, _ in SIDES:
+                self.margins[key].set(t.get(key, "0"))
             self.template_note.configure(text="")
 
+    def _read_margins(self):
+        """(слева, справа, сверху, снизу) в мм."""
+        return tuple(num(self.margins[key].get(), f"Отступ {name}") for key, name in SIDES)
+
+    @staticmethod
+    def _as_template(gap, margins):
+        return {"gap": short(gap), **{key: short(m) for (key, _), m in zip(SIDES, margins)}}
+
     def _template_values(self):
-        gap = num(self.gap.get(), "Зазор")
-        margin = num(self.margin.get(), "Отступ от края")
-        return {"gap": short(gap), "margin": short(margin)}
+        return self._as_template(num(self.gap.get(), "Зазор"), self._read_margins())
 
     def _save_template(self):
         self.error.configure(text="")
@@ -453,11 +480,15 @@ class App(tk.Tk):
         self.template_box.configure(values=sorted(templates))
         self.template_note.configure(text="✓ Удалено")
 
-    def _nest_title(self, gap, margin):
-        """Строка «зазор 14 мм, отступ 10 мм (шаблон «…»)» для результата."""
-        text = f"зазор {short(gap)} мм, отступ {short(margin)} мм"
+    def _nest_title(self, gap, margins):
+        """«зазор 14 мм, отступы: слева 10, справа 10, сверху 20, снизу 0 мм (шаблон «…»)»."""
+        if len(set(margins)) == 1:
+            text = f"зазор {short(gap)} мм, отступ {short(margins[0])} мм со всех сторон"
+        else:
+            sides = ", ".join(f"{name} {short(m)}" for (_, name), m in zip(SIDES, margins))
+            text = f"зазор {short(gap)} мм, отступы: {sides} мм"
         name = self.template.get().strip()
-        if self.templates.get(name) == {"gap": short(gap), "margin": short(margin)}:
+        if self.templates.get(name) == self._as_template(gap, margins):
             text += f" (шаблон «{name}»)"
         return text
 
@@ -485,7 +516,8 @@ class App(tk.Tk):
         self.warning.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
         # ошибки ввода — тут же, под результатом
         self.error = self.warning
-        card.bind("<Configure>", lambda e: self.warning.configure(wraplength=e.width - 40))
+        card.bind("<Configure>", lambda e: (self.warning.configure(wraplength=e.width - 40),
+                                            self.summary.configure(wraplength=e.width - 40)))
 
         buttons = ttk.Frame(card)
         buttons.grid(row=4, column=0, columnspan=4, sticky="w", pady=(10, 0))
@@ -565,10 +597,12 @@ class App(tk.Tk):
             part_mass = num(self.part_mass.get(), "Масса детали")
             qty = num(self.drawing_qty.get(), "Количество на чертеже")
             gap = num(self.gap.get(), "Зазор")
-            margin = num(self.margin.get(), "Отступ от края")
+            margins = self._read_margins()
             if part_mass == 0:
                 raise ValueError("Укажите массу детали")
-            nest_title = self._nest_title(gap, margin)
+            if margins[0] + margins[1] >= length or margins[2] + margins[3] >= width:
+                raise ValueError("Отступы от краёв не оставляют места на листе")
+            nest_title = self._nest_title(gap, margins)
             manual = int(num(self.manual_count.get(), "Количество на листе")) if self.manual.get() else None
         except ValueError as e:
             self.error.configure(text=str(e))
@@ -589,7 +623,7 @@ class App(tk.Tk):
 
         def work():
             try:
-                result["layout"] = nest(part, length, width, gap, margin)
+                result["layout"] = nest(part, length, width, gap, margins)
             except Cancelled:
                 result["cancelled"] = True
             except Exception as e:
@@ -620,6 +654,7 @@ class App(tk.Tk):
                 return
             self.layout = result["layout"]
             self.sheet_size = (length, width)
+            self.sheet_margins = margins
             self._draw()
             self._show_result(thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual,
                               nest_title)
@@ -772,6 +807,12 @@ class App(tk.Tk):
             c.create_text(ox + sheet_l * scale / 2, oy + sheet_w * scale / 2,
                           text="Здесь появится раскладка", fill=MUTED, font=(FONT, 11))
             return
+        left, right, top, bottom = getattr(self, "sheet_margins", (0, 0, 0, 0))
+        if any((left, right, top, bottom)):
+            # пунктир — граница отступов от краёв листа
+            c.create_rectangle(ox + left * scale, oy + top * scale,
+                               ox + (sheet_l - right) * scale, oy + (sheet_w - bottom) * scale,
+                               outline=MUTED, dash=(4, 3))
         for shape in self.layout.shapes:
             if shape[0] == "circle":
                 _, x, y, r = shape
