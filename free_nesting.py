@@ -8,6 +8,8 @@
 3. По ней находится плотная решётка: шаг вдоль ряда и сдвиг следующего ряда.
 4. Пробуются одиночная деталь и пара «деталь + копия, повёрнутая на 180°»
    (так сцепляются треугольники, Г-образные детали и т.п.).
+   С общим резом пара ставится вплотную (без зазора в местах касания),
+   а зазор остаётся только между парами.
 Лучшие плитки по плотности потом раскладываются по листу (nesting.nest).
 """
 
@@ -30,6 +32,8 @@ REFINE_STEP = 2        # шаг уточнения, °
 SHIFT_SAMPLES = 24     # перебор сдвига соседнего ряда
 PAIR_SAMPLES = 72      # перебор положения второй детали в паре
 TOP_TILES = 8          # сколько лучших плиток пробовать на листе
+COMMON_TOL = 0.05      # мм (мм²) — допуск касания в паре под общий рез
+COMMON_MIN_CONTACT = 1.0  # мм — короче общая линия реза не считается (касание в точке)
 
 
 @dataclass
@@ -71,13 +75,14 @@ class FreeShape:
     def __init__(self, polygon):
         self.polygon = polygon                                  # для картинки
         self.outer = Polygon(polygon.exterior).simplify(SIMPLIFY)  # для раскроя
-        self._gap = None
+        self.common = False   # общий рез — ставит окно перед раскладкой
+        self._key = None
         self.tiles = []
 
     def prepare(self, g):
-        if self._gap != g:
-            self.tiles = best_tiles(self.outer, self.polygon, g)
-            self._gap = g
+        if self._key != (g, self.common):
+            self.tiles = best_tiles(self.outer, self.polygon, g, self.common)
+            self._key = (g, self.common)
 
     def best(self, w, h, g):
         self.prepare(g)
@@ -113,16 +118,20 @@ class FreeShape:
         return out
 
 
-def best_tiles(outer, real, g):
+def _inflate(poly, g):
     # Раздутие на g/2 плюс запас: многоугольник раздутия срезает скругления (до 0,012 мм),
     # а упрощение (меньше вершин — в разы быстрее) срезает до tol. Запас = tol + 0,02,
     # поэтому зазор между деталями никогда не меньше заданного, максимум чуть больше.
     tol = SIMPLIFY
     while True:
-        base = outer.buffer(g / 2 + 0.02 + tol, quad_segs=8).simplify(tol)
-        if len(base.exterior.coords) <= MAX_VERTICES or tol >= 2:
-            break
+        out = poly.buffer(g / 2 + 0.02 + tol, quad_segs=8).simplify(tol)
+        if len(out.exterior.coords) <= MAX_VERTICES or tol >= 2:
+            return out
         tol *= 1.5
+
+
+def best_tiles(outer, real, g, common=False):
+    base = _inflate(outer, g)
     tiles, done_full = {}, set()
 
     def try_angle(angle, full):
@@ -135,13 +144,26 @@ def best_tiles(outer, real, g):
         a = affinity.rotate(base, angle, origin=(0, 0))
         r = affinity.rotate(real, angle, origin=(0, 0))
         found = [make_tile([a], [r])]
-        if sym180:
-            tiles[angle] = [x for x in found if x]
-            return
-        b = affinity.rotate(a, 180, origin=(0, 0))
         rb = affinity.rotate(r, 180, origin=(0, 0))
-        for t in _pair_offsets(a, b, aligned=full):
-            found.append(make_tile([a, affinity.translate(b, *t)], [r, affinity.translate(rb, *t)]))
+        if not sym180:
+            b = affinity.rotate(a, 180, origin=(0, 0))
+            for t in _pair_offsets(a, b, aligned=full):
+                found.append(make_tile([a, affinity.translate(b, *t)], [r, affinity.translate(rb, *t)]))
+        if common:
+            # пара вплотную по настоящему контуру, раздувается целиком — зазор только между парами
+            # (здесь и фигуры, симметричные при повороте на 180°: прямоугольник встык к прямоугольнику)
+            c = affinity.rotate(outer, angle, origin=(0, 0))
+            cb = affinity.rotate(c, 180, origin=(0, 0))
+            for t in _pair_offsets(c, cb, aligned=full):
+                ct = affinity.translate(cb, *t)
+                if not _common_pair(c, ct):
+                    continue
+                # раздутые копии перекрываются на зазор — их объединение надёжно (касание — нет)
+                spans = [_inflate(c, g), _inflate(ct, g)]
+                pair = _union(spans)
+                if pair.geom_type != "Polygon":
+                    continue
+                found.append(make_tile([pair], [r, affinity.translate(rb, *t)], spans))
         tiles[angle] = [x for x in found if x]
 
     # Симметрия: круг — хватит одного угла; квадрат — углов до 90°;
@@ -173,13 +195,23 @@ def best_tiles(outer, real, g):
     return result + [t for a in axis for t in tiles[a] if t not in result]
 
 
+def _common_pair(a, b):
+    """Пара под общий рез: детали не налезают и касаются линией, а не точкой.
+
+    Поиск «вплотную» для фигур, симметричных при повороте на 180°, иногда даёт
+    копию прямо поверх детали — такие варианты отсюда и отсеиваются."""
+    return (a.intersection(b).area <= COMMON_TOL
+            and a.boundary.intersection(b.buffer(COMMON_TOL)).length >= COMMON_MIN_CONTACT)
+
+
 def _same_after_turn(poly, angle, tol=0.2):
     """Совпадает ли фигура сама с собой после поворота (с точностью до сдвига)."""
     turned = affinity.rotate(poly, angle, origin="centroid")
     return poly.hausdorff_distance(turned) < tol
 
 
-def make_tile(inflated, real):
+def make_tile(inflated, real, spans_of=None):
+    """spans_of — раздутые детали по одной, если inflated — склеенная пара (общий рез)."""
     region = Region(_union([nfp_of(a, b) for a in inflated for b in inflated]))
     pitch = _pitch(region)
     if pitch is None:
@@ -191,7 +223,7 @@ def make_tile(inflated, real):
     pts = np.vstack([np.array(p.exterior.coords) for p in inflated])
     (minx, miny), (maxx, maxy) = pts.min(axis=0), pts.max(axis=0)
     parts = [affinity.translate(p, -minx, -miny) for p in real]
-    spans = [(p.bounds[0] - minx, p.bounds[2] - minx) for p in inflated]
+    spans = [(p.bounds[0] - minx, p.bounds[2] - minx) for p in (spans_of or inflated)]
     area = sum(p.area for p in real)
     return Tile(parts, spans, maxx - minx, maxy - miny, pitch, shift, row, area / (pitch * row))
 

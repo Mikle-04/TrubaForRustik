@@ -433,13 +433,21 @@ class App(tk.Tk):
             ttk.Entry(fields, textvariable=self.margins[k1], width=6).pack(side="left")
             ttk.Label(fields, text="/").pack(side="left", padx=4)
             ttk.Entry(fields, textvariable=self.margins[k2], width=6).pack(side="left")
+        # Общий рез: соседние детали режутся одной линией — без зазора в местах касания
+        self.common = tk.BooleanVar(value=False)
+        self.common_check = ttk.Checkbutton(card, text="Общий рез", variable=self.common,
+                                            style="Switch.TCheckbutton")
+        self.common_check.grid(row=6, column=0, sticky="w", pady=(6, 0))
+        self.common_note = ttk.Label(card, style="Caption.TLabel")
+        self.common_note.grid(row=6, column=1, columnspan=3, sticky="w", pady=(6, 0))
         self.manual = tk.BooleanVar(value=False)
         self.manual_count = tk.StringVar()
         ttk.Checkbutton(card, text="Кол-во на листе вручную", variable=self.manual,
                         style="Switch.TCheckbutton", command=self._toggle_manual
-                        ).grid(row=6, column=0, sticky="w", pady=(6, 2))
+                        ).grid(row=7, column=0, sticky="w", pady=(6, 2))
         self.manual_entry = ttk.Entry(card, textvariable=self.manual_count, width=12, state="disabled")
-        self.manual_entry.grid(row=6, column=1, columnspan=3, sticky="w", pady=(6, 2))
+        self.manual_entry.grid(row=7, column=1, columnspan=3, sticky="w", pady=(6, 2))
+        self._update_common()
 
     def _apply_template(self):
         """Выбран шаблон — его зазор и отступы уходят в поля; править их можно, шаблон не меняется."""
@@ -515,6 +523,8 @@ class App(tk.Tk):
         name = self.template.get().strip()
         if self.templates.get(name) == self._as_template(gap, margins):
             text += f" (шаблон «{name}»)"
+        if self._common_on():
+            text += ", общий рез"
         return text
 
     def _build_result_card(self, root):
@@ -569,6 +579,23 @@ class App(tk.Tk):
             self._update_dxf_info()
         else:
             self.mass_reset.grid_remove()
+        if hasattr(self, "common_check"):
+            self._update_common()
+
+    def _update_common(self):
+        """Что даёт общий рез для выбранной детали; у кругов общей линии нет — выключен."""
+        notes = {
+            "Фланец": "у кругов нет общей линии",
+            "Пластина": "пластины встык",
+            "Косынка": "пары без зазора по гипотенузе",
+            "DXF": "пары без зазора в местах касания",
+        }
+        kind = self.part_type.get()
+        self.common_check.configure(state="disabled" if kind == "Фланец" else "normal")
+        self.common_note.configure(text=notes[kind])
+
+    def _common_on(self):
+        return self.common.get() and self.part_type.get() != "Фланец"
 
     def _toggle_manual(self):
         self.manual_entry.configure(state="normal" if self.manual.get() else "disabled")
@@ -597,6 +624,7 @@ class App(tk.Tk):
                 raise ValueError("Выберите DXF-файл с деталью")
             key = (self.dxf_path, self.dxf_box.current(), os.path.getmtime(self.dxf_path))
             part = self.free_parts.setdefault(key, FreeShape(shape.polygon))
+            part.common = self._common_on()
             return part, f"{self.dxf.name} ({shape.width:.0f}×{shape.height:.0f})"
         values = [num(v.get(), label) for (label, _), v in zip(PART_TYPES[kind], self.dims[kind])]
         if any(v == 0 for v in values[:2]):
@@ -604,11 +632,11 @@ class App(tk.Tk):
         if kind == "Фланец":
             return Circle(values[0]), f"фланец Ø{values[0]:g}"
         if kind == "Пластина":
-            return Plate(values[0], values[1]), f"пластина {values[0]:g}×{values[1]:g}"
+            return Plate(values[0], values[1], self._common_on()), f"пластина {values[0]:g}×{values[1]:g}"
         a, b, cut = values
         if cut * 2 >= min(a, b):
             raise ValueError("Срез углов слишком большой для такой косынки")
-        return Gusset(a, b, cut), f"косынка {a:g}×{b:g}, срез углов {cut:g}"
+        return Gusset(a, b, cut, common=self._common_on()), f"косынка {a:g}×{b:g}, срез углов {cut:g}"
 
     def run(self):
         self.error.configure(text="")

@@ -89,8 +89,10 @@ class Circle:
 class Plate:
     a: float
     b: float
+    common: bool = False  # общий рез: соседние пластины встык, без зазора
 
     def best(self, w, h, g):
+        g = 0.0 if self.common else g
         best = (0, None)
         for pa, pb in ((self.a, self.b), (self.b, self.a)):
             nx, ny = fit(w, pa, pa + g), fit(h, pb, pb + g)
@@ -99,6 +101,7 @@ class Plate:
         return best
 
     def build(self, params, g):
+        g = 0.0 if self.common else g
         pa, pb, nx, ny = params
         out = []
         for i in range(nx):
@@ -115,6 +118,7 @@ class Gusset:
     a: float          # катет 1
     b: float          # катет 2
     cut: float = 0.0  # срез всех трёх углов, мм
+    common: bool = False  # общий рез: пара «вверх-вниз» без зазора по гипотенузе
 
     def best(self, w, h, g):
         """Полосы из чередующихся треугольников «вверх-вниз», гипотенузы параллельны."""
@@ -122,7 +126,7 @@ class Gusset:
         for tw, th, swap in ((w, h, False), (h, w, True)):
             for la, lb in ((self.a, self.b), (self.b, self.a)):
                 strips = fit(th, lb, lb + g)
-                per_strip, dx = _gusset_strip(tw, la, lb, g)
+                per_strip, dx = _gusset_strip(tw, la, lb, g, self.common)
                 count = strips * per_strip
                 if count > best[0]:
                     best = (count, (swap, la, lb, dx, strips, tw))
@@ -151,12 +155,13 @@ class Gusset:
         return out
 
 
-def _gusset_strip(length, la, lb, g):
+def _gusset_strip(length, la, lb, g, common=False):
     """Сколько треугольников (катет la вдоль полосы, lb поперёк) в полосе длиной length.
 
     Перевёрнутый треугольник сдвинут на dx, чтобы между гипотенузами был зазор g.
+    Общий рез — гипотенузы встык (dx = 0), остальные зазоры прежние.
     """
-    dx = g * math.hypot(la, lb) / lb
+    dx = 0.0 if common else g * math.hypot(la, lb) / lb
     period = la + dx + g
     return fit(length, la, period) + fit(length - dx, la, period), dx
 
