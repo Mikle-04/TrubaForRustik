@@ -14,6 +14,7 @@ import sv_ttk
 from calc import calculate
 from dxf_import import DxfError, load_dxf
 from free_nesting import FreeShape
+from library import DEFAULT_SECTION, SECTIONS, load_library, save_library, unique_name
 from nesting import CANCEL, Cancelled, Circle, Gusset, Plate, Trapezoid, _cut_corners, nest
 from sheets import GRADES, SHEET_L, SHEET_W, THICKNESSES, sheet_mass, sheet_name
 
@@ -135,6 +136,8 @@ class App(tk.Tk):
         self.dxf_path = None
         self.free_parts = {}      # (файл, контур, время изменения) → FreeShape: раскрой кэшируется
         self.values = None
+        self.last_entry = None    # последний результат — для кнопки «В библиотеку»
+        self.library = load_library()
         self.report = ""
 
         header = ttk.Frame(self, padding=(20, 12, 20, 0))
@@ -154,11 +157,15 @@ class App(tk.Tk):
         tabs.pack(fill="both", expand=True, padx=20, pady=(8, 8))
         calc_tab = ttk.Frame(tabs, padding=12)
         sheets_tab = ttk.Frame(tabs, padding=12)
+        library_tab = ttk.Frame(tabs, padding=12)
         tabs.add(calc_tab, text="  Расчёт  ")
         tabs.add(sheets_tab, text="  Листы  ")
+        tabs.add(library_tab, text="  Библиотека  ")
         self._build_calc_tab(calc_tab)
         self._build_sheets_tab(sheets_tab)
-        self.bind("<Return>", lambda _: self.run())
+        self._build_library_tab(library_tab)
+        # Enter — «Рассчитать», но только на вкладке расчёта
+        self.bind("<Return>", lambda _: self.run() if tabs.index("current") == 0 else None)
 
     def _styles(self):
         s = ttk.Style(self)
@@ -626,6 +633,7 @@ class App(tk.Tk):
         ttk.Button(buttons, text="Копировать для Excel", command=self.copy_excel).pack(
             side="left", padx=8)
         ttk.Button(buttons, text="Окно поверх всех", command=self.toggle_pin).pack(side="left")
+        ttk.Button(buttons, text="В библиотеку", command=self.add_to_library).pack(side="left", padx=(6, 0))
         self.copied = ttk.Label(buttons, style="Ok.TLabel")
         self.copied.pack(side="left", padx=8)
         self.pin = None
@@ -733,6 +741,7 @@ class App(tk.Tk):
             if m_sheet == 0:
                 raise ValueError("Укажите массу листа")
             part, part_title = self._make_part()
+            kind = self.part_type.get()
             part_mass = num(self.part_mass.get(), "Масса детали")
             qty = num(self.drawing_qty.get(), "Количество на чертеже")
             gap = num(self.gap.get(), "Зазор")
@@ -796,7 +805,7 @@ class App(tk.Tk):
             self.sheet_margins = margins
             self._draw()
             self._show_result(thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual,
-                              nest_title)
+                              nest_title, kind)
 
         wait()
 
@@ -805,7 +814,8 @@ class App(tk.Tk):
         self.run_btn.configure(state="disabled")
 
     def _show_result(self, thickness, grade, width, length, m_sheet, part_title, part_mass, qty, manual,
-                     nest_title):
+                     nest_title, kind):
+        self.last_entry = None
         count = manual if manual is not None else self.layout.count
         source = (f"вручную (программа разложила {self.layout.count})" if manual is not None
                   else "раскладка программы")
@@ -818,6 +828,13 @@ class App(tk.Tk):
         r = calculate(m_sheet, count, part_mass)
         self.values = [title, m_sheet, part_title, part_mass, count,
                        r.blank, r.burn, r.waste, r.scrap, qty]
+        self.last_entry = {
+            "name": f"{part_title[:1].upper()}{part_title[1:]} · {thickness:g} мм {grade}",
+            "section": DEFAULT_SECTION.get(kind, SECTIONS[-1]),
+            "sheet": title, "sheet_mass": m_sheet, "part": part_title, "count": count, "nest": nest_title,
+            "mass": part_mass, "blank": r.blank, "burn": r.burn, "waste": r.waste, "scrap": r.scrap,
+            "qty": qty, "saved": time.strftime("%d.%m.%Y"),
+        }
         formula_mass = sheet_mass(thickness, grade, width, length)
         mass_note = ("" if abs(m_sheet - formula_mass) < 0.0005
                      else f" (вручную, по формуле {fmt(formula_mass)})")
@@ -891,15 +908,19 @@ class App(tk.Tk):
         ttk.Label(body, style="Muted.TLabel", justify="left",
                   text=f"{sheet}\n{part}\nНа листе: {count} шт"
                   ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        self._value_grid(body, 1, m_part, (blank, burn, waste, scrap), qty)
+
+    def _value_grid(self, body, top, m_part, metrics, qty):
+        """Мд, Мз, У, Ро, Мт на 1 шт и на qty шт, начиная со строки top; клик по числу — копировать."""
         status = ttk.Label(body, style="Muted.TLabel", text="Клик по числу — скопировать")
         cols = [("на 1 шт", 1)] + ([(f"на {qty:g} шт", qty)] if qty != 1 else [])
         if len(cols) > 1:
             for c, (title, _) in enumerate(cols, start=1):
                 ttk.Label(body, text=title, style="Caption.TLabel").grid(
-                    row=1, column=c, sticky="e", padx=(16, 0))
+                    row=top, column=c, sticky="e", padx=(16, 0))
         rows = [("Масса детали", "Мд", m_part)] + [
-            (name, short, v) for (_, name, short), v in zip(METRICS, (blank, burn, waste, scrap))]
-        for row, (name, short, v) in enumerate(rows, start=2):
+            (name, short, v) for (_, name, short), v in zip(METRICS, metrics)]
+        for row, (name, short, v) in enumerate(rows, start=top + 1):
             ttk.Label(body, text=f"{name} · {short}", style="Info.TLabel").grid(row=row, column=0, sticky="w")
             for c, (_, k) in enumerate(cols, start=1):
                 text = fmt(v * k)
@@ -909,7 +930,7 @@ class App(tk.Tk):
                 value.bind("<Button-1>", lambda _, t=text, n=short: (
                     self.clipboard_clear(), self.clipboard_append(t),
                     status.configure(text=f"✓ Скопировано: {n} = {t}", style="Ok.TLabel")))
-        status.grid(row=len(rows) + 2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        status.grid(row=len(rows) + top + 1, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
     def _to_clipboard(self, text, note):
         self.clipboard_clear()
@@ -995,6 +1016,190 @@ class App(tk.Tk):
             note.configure(text="✓ Скопировано"),
         )).grid(row=3, column=0, sticky="w", pady=(8, 0))
         note.grid(row=3, column=1, sticky="w", padx=8, pady=(8, 0))
+
+    # ---------- Вкладка «Библиотека» ----------
+
+    def add_to_library(self):
+        """Посчитанная деталь — в библиотеку; название придумывается само, его можно поменять там."""
+        if not self.last_entry:
+            self.copied.configure(text="Сначала нажмите «Рассчитать»")
+            return
+        entry = dict(self.last_entry, name=unique_name(self.last_entry["name"], self.library))
+        self.library.append(entry)
+        if not self._save_library():
+            self.library.pop()
+            return
+        self.copied.configure(text=f"✓ В библиотеке: {entry['name']}")
+        self._fill_library(select=entry)
+
+    def _save_library(self):
+        try:
+            save_library(self.library)
+            return True
+        except OSError as e:
+            messagebox.showerror(APP_NAME, f"Не удалось сохранить библиотеку: {e}")
+            return False
+
+    def _build_library_tab(self, root):
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(1, weight=1)
+
+        top = ttk.Frame(root)
+        top.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        ttk.Label(top, text="Поиск").pack(side="left")
+        self.lib_search = tk.StringVar()
+        ttk.Entry(top, textvariable=self.lib_search, width=28).pack(side="left", padx=(8, 16))
+        self.lib_search.trace_add("write", lambda *_: self._fill_library())
+        self.lib_filter = tk.StringVar(value="Все")
+        for name in ["Все"] + SECTIONS:
+            ttk.Radiobutton(top, text=name, value=name, variable=self.lib_filter, style="Toggle.TButton",
+                            command=self._fill_library).pack(side="left", padx=(0, 6))
+
+        holder = ttk.Frame(root)
+        holder.grid(row=1, column=0, sticky="nsew")
+        holder.columnconfigure(0, weight=1)
+        holder.rowconfigure(0, weight=1)
+        cols = [("mass", "Мд, кг")] + [(key, f"{s}, кг") for key, _, s in METRICS]
+        tree = ttk.Treeview(holder, columns=[c for c, _ in cols], selectmode="browse")
+        tree.heading("#0", text="Название")
+        tree.column("#0", width=380, minwidth=200)
+        for c, title in cols:
+            tree.heading(c, text=title)
+            tree.column(c, width=80, minwidth=60, anchor="e", stretch=False)
+        scroll = ttk.Scrollbar(holder, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        tree.bind("<<TreeviewSelect>>", lambda _: self._show_library_item())
+        self.lib_tree = tree
+
+        card = self._card(root, "Деталь")
+        card.grid(row=1, column=1, sticky="nsew", padx=(12, 0))
+        self.lib_item = None
+        self.lib_body = ttk.Frame(card)
+        self.lib_body.grid(row=1, column=0, columnspan=4, sticky="nsew")
+        self._fill_library()
+
+    def _fill_library(self, select=None):
+        """Список по разделам с учётом поиска и фильтра; select — какую деталь выделить."""
+        tree = self.lib_tree
+        select = select or self.lib_item
+        tree.delete(*tree.get_children())
+        query = self.lib_search.get().strip().lower()
+        shown = SECTIONS if self.lib_filter.get() == "Все" else [self.lib_filter.get()]
+        for section in shown:
+            items = [(i, it) for i, it in enumerate(self.library) if it["section"] == section
+                     and (query in it["name"].lower() or query in it.get("part", "").lower())]
+            if query and not items:
+                continue
+            tree.insert("", "end", iid=section, text=f"{section} ({len(items)})", open=True)
+            for i, it in sorted(items, key=lambda p: p[1]["name"].lower()):
+                tree.insert(section, "end", iid=f"item{i}", text=it["name"],
+                            values=[fmt(it.get(k, 0)) for k in ("mass", "blank", "burn", "waste", "scrap")])
+        if select is not None and any(it is select for it in self.library):
+            iid = f"item{next(i for i, it in enumerate(self.library) if it is select)}"
+            if tree.exists(iid):
+                tree.selection_set(iid)
+                tree.see(iid)
+                return
+        self._show_library_item()
+
+    def _selected_library_item(self):
+        sel = self.lib_tree.selection()
+        if not sel or not sel[0].startswith("item"):
+            return None
+        return self.library[int(sel[0][4:])]
+
+    def _show_library_item(self):
+        """Карточка выбранной детали: название, раздел, количество и значения."""
+        item = self._selected_library_item()
+        if item is not None and item is self.lib_item:
+            return
+        self.lib_item = item
+        body = self.lib_body
+        for child in body.winfo_children():
+            child.destroy()
+        if item is None:
+            text = ("Библиотека пуста. Посчитайте деталь на вкладке «Расчёт»\nи нажмите «В библиотеку»."
+                    if not self.library else "Выберите деталь в списке")
+            ttk.Label(body, text=text, style="Muted.TLabel", justify="left").grid(row=0, column=0, sticky="w")
+            return
+
+        ttk.Label(body, text="Название").grid(row=0, column=0, sticky="w", pady=1)
+        name = tk.StringVar(value=item["name"])
+        name_entry = ttk.Entry(body, textvariable=name, width=40)
+        name_entry.grid(row=0, column=1, columnspan=2, sticky="ew", pady=1, padx=(10, 0))
+        note = ttk.Label(body, style="Ok.TLabel")
+
+        def rename(_=None):
+            new = name.get().strip()
+            if not new:
+                note.configure(text="Название не может быть пустым", style="Error.TLabel")
+                return "break"
+            if new != item["name"]:
+                old = item["name"]
+                item["name"] = unique_name(new, self.library, skip=item)
+                if not self._save_library():
+                    item["name"] = old
+                    return "break"
+                name.set(item["name"])
+                self._fill_library(select=item)   # та же деталь — карточка не перерисовывается
+            note.configure(text="✓ Сохранено", style="Ok.TLabel")
+            return "break"
+
+        name_entry.bind("<Return>", rename)
+        ttk.Button(body, text="Переименовать", command=rename).grid(row=1, column=1, sticky="w", padx=(10, 0))
+        note.grid(row=1, column=2, sticky="w", padx=(8, 0))
+
+        ttk.Label(body, text="Раздел").grid(row=2, column=0, sticky="w", pady=(6, 1))
+        section = tk.StringVar(value=item["section"])
+        box = ttk.Combobox(body, textvariable=section, values=SECTIONS, state="readonly", width=18)
+        box.grid(row=2, column=1, sticky="w", pady=(6, 1), padx=(10, 0))
+
+        def move(_):
+            item["section"] = section.get()
+            if self._save_library():
+                self._fill_library(select=item)
+
+        box.bind("<<ComboboxSelected>>", move)
+
+        ttk.Label(body, style="Muted.TLabel", justify="left", text=(
+            f"{item.get('sheet', '')}\n{item.get('part', '')} · на листе {item.get('count', '')} шт\n"
+            f"Раскладка: {item.get('nest', '')}\nДобавлено {item.get('saved', '')}")
+                  ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 8))
+
+        ttk.Label(body, text="Количество, шт").grid(row=4, column=0, sticky="w", pady=1)
+        qty = tk.StringVar(value=short(item.get("qty", 1)))
+        ttk.Entry(body, textvariable=qty, width=8).grid(row=4, column=1, sticky="w", pady=1, padx=(10, 0))
+        values = ttk.Frame(body)
+        values.grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
+
+        def show_values(*_):
+            try:
+                q = num(qty.get(), "Количество")
+            except ValueError:
+                return
+            if q == 0:
+                return
+            for child in values.winfo_children():
+                child.destroy()
+            self._value_grid(values, 0, item["mass"], [item[k] for k in ("blank", "burn", "waste", "scrap")], q)
+            if q != item.get("qty"):
+                item["qty"] = q
+                self._save_library()
+
+        qty.trace_add("write", show_values)
+        show_values()
+
+        def delete():
+            if messagebox.askyesno(APP_NAME, f"Удалить «{item['name']}» из библиотеки?"):
+                self.library.remove(item)
+                self._save_library()
+                self.lib_item = None
+                self._fill_library()
+
+        ttk.Button(body, text="Удалить из библиотеки", command=delete).grid(
+            row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
 
 
 if __name__ == "__main__":
