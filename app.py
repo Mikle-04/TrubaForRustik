@@ -42,6 +42,7 @@ ACCENT = "#005fb8"
 ERROR = "#c42b1c"
 OK = "#0f7b0f"
 MUTED = "#5f6b7a"
+RULER_STEP = 500  # шаг делений линеек на картинке раскладки, мм
 
 
 def resource(path):
@@ -959,13 +960,15 @@ class App(tk.Tk):
         c.delete("all")
         cw, ch = c.winfo_width(), c.winfo_height()
         sheet_l, sheet_w = getattr(self, "sheet_size", (SHEET_L, SHEET_W))
-        pad = 4
-        scale = min((cw - 2 * pad) / sheet_l, (ch - 2 * pad - 22) / sheet_w)
+        pad = 8           # сверху — чтобы подпись верхнего деления не обрезалась
+        rx, ry = 34, 16   # место под линейки: слева — подписи ширины, снизу — длины
+        scale = min((cw - rx - 16) / sheet_l, (ch - pad - ry - 22) / sheet_w)
         if scale <= 0:
             return
-        ox, oy = pad, pad
+        ox, oy = rx, pad
         c.create_rectangle(ox, oy, ox + sheet_l * scale, oy + sheet_w * scale,
                            fill="#e8edf2", outline="#9aa7b4")
+        self._rulers(ox, oy, sheet_l, sheet_w, scale)
         if not self.layout:
             c.create_text(ox + sheet_l * scale / 2, oy + sheet_w * scale / 2,
                           text="Здесь появится раскладка", fill=MUTED, font=(FONT, 11))
@@ -986,9 +989,29 @@ class App(tk.Tk):
                 pts = [v for x, y in shape[1] for v in (ox + x * scale, oy + y * scale)]
                 hole = shape[0] == "hole"
                 c.create_polygon(pts, fill="#e8edf2" if hole else "#cfe3fa", outline=ACCENT)
-        c.create_text(ox, oy + sheet_w * scale + 6, anchor="nw", fill=MUTED, font=(FONT, 10),
+        c.create_text(ox, oy + sheet_w * scale + ry + 4, anchor="nw", fill=MUTED, font=(FONT, 10),
                       text=f"Лист {sheet_l:g}×{sheet_w:g} мм · программа разложила "
                            f"{self.layout.count} шт")
+
+    def _rulers(self, ox, oy, sheet_l, sheet_w, scale):
+        """Линейки по нижнему и левому краю листа: деления через RULER_STEP мм от левого нижнего угла.
+        Если подписи не помещаются, подписывается каждое второе (третье…) деление."""
+        c = self.canvas
+        bottom = oy + sheet_w * scale
+        font = (FONT, 8)
+        for size, label_px, along in ((sheet_l, 34, True), (sheet_w, 14, False)):
+            every = max(1, math.ceil(label_px / (RULER_STEP * scale)))
+            for i in range(int(size // RULER_STEP) + 1):
+                d = i * RULER_STEP * scale
+                text = str(i * RULER_STEP) if i % every == 0 else ""
+                if along:
+                    x = ox + d
+                    c.create_line(x, bottom, x, bottom + 4, fill=MUTED)
+                    c.create_text(x, bottom + 4, anchor="n", text=text, fill=MUTED, font=font)
+                else:
+                    y = bottom - d
+                    c.create_line(ox - 4, y, ox, y, fill=MUTED)
+                    c.create_text(ox - 6, y, anchor="e", text=text, fill=MUTED, font=font)
 
     # ---------- Вкладка «Листы» ----------
 
