@@ -15,7 +15,7 @@ from calc import calculate
 from dxf_import import DxfError, load_dxf
 from free_nesting import FreeShape
 from library import DEFAULT_SECTION, SECTIONS, load_library, matches, save_library, unique_name
-from nesting import CANCEL, Cancelled, Circle, Gusset, Plate, Trapezoid, _cut_corners, nest
+from nesting import CANCEL, Cancelled, Circle, Gusset, Plate, Trapezoid, _gusset_points, nest
 from sheets import GRADES, SHEET_L, SHEET_W, THICKNESSES, sheet_mass, sheet_name
 
 PART_TYPES = {
@@ -116,7 +116,7 @@ def part_area(kind, values):
             return values[0] * (values[1] + values[2]) / 2
         return values[0] * values[1]
     a, b, cut = values
-    pts = _cut_corners([(0, 0), (a, 0), (0, b)], cut)
+    pts = _gusset_points(a, b, cut)
     return abs(sum(x1 * y2 - x2 * y1 for (x1, y1), (x2, y2) in zip(pts, pts[1:] + pts[:1]))) / 2
 
 
@@ -728,7 +728,7 @@ class App(tk.Tk):
                         f"пластина {length:g}×{bottom:g}/{top:g} (трапеция)")
             return Plate(values[0], values[1], self._common_on()), f"пластина {values[0]:g}×{values[1]:g}"
         a, b, cut = values
-        if cut * 2 >= min(a, b):
+        if cut >= min(a, b):
             raise ValueError("Срез углов слишком большой для такой косынки")
         return Gusset(a, b, cut, common=self._common_on()), f"косынка {a:g}×{b:g}, срез углов {cut:g}"
 

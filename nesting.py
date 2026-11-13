@@ -157,13 +157,13 @@ class Trapezoid:
         return out
 
 
-# ---------- Косынка (прямоугольный треугольник со срезанными углами) ----------
+# ---------- Косынка (прямоугольный треугольник с торцами и фаской) ----------
 
 @dataclass
 class Gusset:
     a: float          # катет 1
     b: float          # катет 2
-    cut: float = 0.0  # срез всех трёх углов, мм
+    cut: float = 0.0  # торцы на острых концах и фаска cut×45° в прямом угле, мм
     common: bool = False  # общий рез: пара «вверх-вниз» без зазора по гипотенузе
 
     def best(self, w, h, g):
@@ -172,7 +172,7 @@ class Gusset:
         for tw, th, swap in ((w, h, False), (h, w, True)):
             for la, lb in ((self.a, self.b), (self.b, self.a)):
                 strips = fit(th, lb, lb + g)
-                per_strip, dx = _gusset_strip(tw, la, lb, g, self.common)
+                per_strip, dx = _gusset_strip(tw, la, lb, g, self.cut, self.common)
                 count = strips * per_strip
                 if count > best[0]:
                     best = (count, (swap, la, lb, dx, strips, tw))
@@ -186,42 +186,37 @@ class Gusset:
         out = []
         for j in range(strips):
             y = j * (lb + g)
-            tris = []
-            for k in range(n_up):
-                x = k * period
-                tris.append([(x, y), (x + la, y), (x, y + lb)])
-            for k in range(n_down):
-                x = k * period + dx
-                tris.append([(x + la, y + lb), (x, y + lb), (x + la, y)])
-            for tri in tris:
-                pts = _cut_corners(tri, self.cut)
+            shape = _gusset_points(la, lb, self.cut)
+            tris = [[(k * period + px, y + py) for px, py in shape] for k in range(n_up)]
+            tris += [[(k * period + dx + la - px, y + lb - py) for px, py in shape]
+                     for k in range(n_down)]
+            for pts in tris:
                 if swap:
                     pts = [(py, px) for px, py in pts]
                 out.append(("poly", pts))
         return out
 
 
-def _gusset_strip(length, la, lb, g, common=False):
-    """Сколько треугольников (катет la вдоль полосы, lb поперёк) в полосе длиной length.
+def _gusset_strip(length, la, lb, g, c=0.0, common=False):
+    """Сколько косынок (катет la вдоль полосы, lb поперёк) в полосе длиной length.
 
-    Перевёрнутый треугольник сдвинут на dx, чтобы между гипотенузами был зазор g.
-    Общий рез — гипотенузы встык (dx = 0), остальные зазоры прежние.
+    Перевёрнутая косынка сдвинута на dx, чтобы между гипотенузами был зазор g.
+    Гипотенуза идёт между торцами: от (la, c) до (c, lb).
+    Общий рез — гипотенузы встык, остальные зазоры прежние.
     """
-    dx = 0.0 if common else g * math.hypot(la, lb) / lb
+    dx = c + c * (la - c) / (lb - c)
+    if not common:
+        dx += g * math.hypot(la - c, lb - c) / (lb - c)
     period = la + dx + g
     return fit(length, la, period) + fit(length - dx, la, period), dx
 
 
-def _cut_corners(pts, c):
+def _gusset_points(a, b, c):
+    """Контур косынки: катеты a и b — полные стороны, на острых концах торцы c,
+    прямой угол срезан фаской c×45° (как чертят в КОМПАСе)."""
     if c <= 0:
-        return pts
-    out = []
-    n = len(pts)
-    for i, (vx, vy) in enumerate(pts):
-        for nx, ny in (pts[i - 1], pts[(i + 1) % n]):
-            ln = math.hypot(nx - vx, ny - vy)
-            out.append((vx + c * (nx - vx) / ln, vy + c * (ny - vy) / ln))
-    return out
+        return [(0, 0), (a, 0), (0, b)]
+    return [(c, 0), (a, 0), (a, c), (c, b), (0, b), (0, c)]
 
 
 # ---------- Раскладка на листе ----------
